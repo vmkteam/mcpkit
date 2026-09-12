@@ -1,0 +1,8 @@
+.idea
+.vscode
+.DS_Store
+coverage.txt
+coverage.xml
+
+# Working notes: research, specification, plans. They stay local.
+/docs/llm/
