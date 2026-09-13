@@ -66,7 +66,7 @@ func (s PromptsService) List(cursor string) (mcp.PromptList, error) {
 	if err != nil {
 		return mcp.PromptList{}, RPCError("prompts.list", err)
 	}
-	return mcp.PromptList{Prompts: page, NextCursor: next, CacheHint: s.hint.Normalized()}, nil
+	return mcp.PromptList{Prompts: page, NextCursor: next, CacheHint: s.hint}, nil
 }
 
 // Get renders a prompt by name with the supplied arguments. The answer is a

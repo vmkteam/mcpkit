@@ -111,6 +111,16 @@ type PingResult struct{}
 
 // --- server/discover ----------------------------------------------------------
 
+// CacheScope is who may hold a cacheable answer.
+//
+// It has its own type because its default is not its zero value: the field is
+// required on every cacheable result, and an empty string names no scope at all
+// — worse than sending nothing. Marshaling fills it in, so the invariant lives
+// in the type rather than in the memory of whoever built the result. That is the
+// same reason resultType is written by the encoder below, and the reason a
+// result type added later gets this for free.
+type CacheScope string
+
 // Cache scopes a cacheable result may declare.
 const (
 	// CacheScopePublic says the answer holds nothing user-specific, and any
@@ -118,10 +128,20 @@ const (
 	// the content, and the spec is blunt about the consequence: such an answer
 	// "may be shared between callers even if the Result is coming from an
 	// authenticated endpoint".
-	CacheScopePublic = "public"
+	CacheScopePublic CacheScope = "public"
 	// CacheScopePrivate keeps the answer inside one authorization context.
-	CacheScopePrivate = "private"
+	CacheScopePrivate CacheScope = "private"
 )
+
+// MarshalJSON writes the effective scope: private unless the server said
+// otherwise. A missing scope must not read as public — the default has to be
+// the one that cannot leak.
+func (s CacheScope) MarshalJSON() ([]byte, error) {
+	if s == "" {
+		s = CacheScopePrivate
+	}
+	return json.Marshal(string(s))
+}
 
 // CacheHint is what every cacheable result carries: how long the client may
 // consider it fresh, and who may hold it.
@@ -129,26 +149,23 @@ const (
 // The zero value — no freshness, private — is the answer a server gives when it
 // does not know how often its own catalogue changes, which is the only thing
 // this library can honestly say on a service's behalf.
+//
+// It carries no MarshalJSON of its own on purpose: an embedded type that has one
+// would take over the encoding of whatever embeds it, and these two fields
+// belong beside the result's own, not nested under a key of their own.
 type CacheHint struct {
-	TTLMs      int64  `json:"ttlMs"`
-	CacheScope string `json:"cacheScope"`
+	TTLMs      int64      `json:"ttlMs"`
+	CacheScope CacheScope `json:"cacheScope"`
 }
 
-// Scope returns the declared scope, defaulting to private. A missing scope must
-// not read as public: the default has to be the one that cannot leak.
-func (h CacheHint) Scope() string {
+// Scope returns the declared scope, defaulting to private. It is the reading
+// half of what MarshalJSON does for the wire, for code that has to branch on
+// the scope rather than send it.
+func (h CacheHint) Scope() CacheScope {
 	if h.CacheScope == "" {
 		return CacheScopePrivate
 	}
 	return h.CacheScope
-}
-
-// Normalized is the hint as it goes on the wire, with the default scope filled
-// in. Sending cacheScope:"" would be worse than sending nothing: the field is
-// required on a cacheable result, and an empty string names no scope at all.
-func (h CacheHint) Normalized() CacheHint {
-	h.CacheScope = h.Scope()
-	return h
 }
 
 // ResultMeta is the _meta of a result. Since 2026-07-28 the server's identity

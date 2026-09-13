@@ -155,7 +155,7 @@ func (r *Registry) List(ctx context.Context, cursor string) (mcp.ToolList, error
 	if err != nil {
 		return mcp.ToolList{}, err
 	}
-	return mcp.ToolList{Tools: page, NextCursor: next, CacheHint: r.hint.Normalized()}, nil
+	return mcp.ToolList{Tools: page, NextCursor: next, CacheHint: r.hint}, nil
 }
 
 // Call dispatches tools/call by name.

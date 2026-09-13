@@ -251,7 +251,9 @@ Every cacheable result carries `ttlMs` and `cacheScope` — the revision require
 the pair on `server/discover` and on the four list operations — and the default
 is `{0, private}`: keep it no time at all, and never share it. That is the only
 answer a library can give for a catalogue whose rate of change it does not know.
-Say better where you know your own:
+The default is filled in by the encoder, on the way out, so a result you build
+by hand names a scope whether or not you set one. Say better where you know your
+own:
 
 ```go
 hint := mcp.CacheHint{TTLMs: 300_000, CacheScope: mcp.CacheScopePublic}

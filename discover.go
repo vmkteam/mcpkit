@@ -43,6 +43,6 @@ func (s DiscoverService) Discover() (mcp.DiscoverResult, error) {
 		Capabilities:      s.deps.Capabilities,
 		Instructions:      s.deps.Instructions,
 		Meta:              &mcp.ResultMeta{ServerInfo: &s.deps.Info},
-		CacheHint:         s.deps.CacheHint.Normalized(),
+		CacheHint:         s.deps.CacheHint,
 	}, nil
 }

@@ -107,7 +107,7 @@ func (s ResourcesService) List(ctx context.Context, cursor string) (mcp.Resource
 		n += len(e.URI) + len(e.Name) + len(e.Description)
 	}
 	s.notify(ctx, "", n, nil)
-	return mcp.ResourceList{Resources: page, NextCursor: next, CacheHint: s.hint.Normalized()}, nil
+	return mcp.ResourceList{Resources: page, NextCursor: next, CacheHint: s.hint}, nil
 }
 
 // Read returns the text of one resource. The argument is the canonical URI from
@@ -138,7 +138,7 @@ func (s ResourcesService) Read(ctx context.Context, uri string) (mcp.ResourceDat
 	s.notify(ctx, canonical, len(data), nil)
 	return mcp.ResourceData{
 		Contents:  []mcp.ResourceContent{resourceContent(canonical, mimeType, data)},
-		CacheHint: s.hint.Normalized(),
+		CacheHint: s.hint,
 	}, nil
 }
 

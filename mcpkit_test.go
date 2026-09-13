@@ -182,7 +182,10 @@ func TestResourceReadEncodesBinary(t *testing.T) {
 		require.NoError(t, err)
 		var back mcp.ResourceData
 		require.NoError(t, json.Unmarshal(raw, &back))
-		require.Equal(t, got, back)
+		// The contents, not the whole result: the cache hint is filled in by the
+		// encoder, so a result built with no scope does not round-trip to itself
+		// — and what this test is about is the bytes of the resource.
+		require.Equal(t, got.Contents, back.Contents)
 		return back.Contents[0]
 	}
 
@@ -225,20 +228,23 @@ func TestCacheHints(t *testing.T) {
 	t.Parallel()
 	lib := testLibrary(t)
 
+	// Scope() rather than the field: the field holds what the service said, which
+	// is nothing here, and the default is filled in on the way out. The wire form
+	// of that is TestCacheScopeIsFilledInByTheEncoder in mcp.
 	t.Run("default is no freshness and private", func(t *testing.T) {
 		t.Parallel()
 		list, err := mcpkit.NewResourcesService(lib).List(t.Context(), "")
 		require.NoError(t, err)
 		assert.Equal(t, int64(0), list.TTLMs)
-		assert.Equal(t, mcp.CacheScopePrivate, list.CacheScope)
+		assert.Equal(t, mcp.CacheScopePrivate, list.Scope())
 
 		read, err := mcpkit.NewResourcesService(lib).Read(t.Context(), "targets/grafana.md")
 		require.NoError(t, err)
-		assert.Equal(t, mcp.CacheScopePrivate, read.CacheScope)
+		assert.Equal(t, mcp.CacheScopePrivate, read.Scope())
 
 		prompts, err := mcpkit.NewPromptsService(lib).List("")
 		require.NoError(t, err)
-		assert.Equal(t, mcp.CacheScopePrivate, prompts.CacheScope)
+		assert.Equal(t, mcp.CacheScopePrivate, prompts.Scope())
 	})
 
 	t.Run("a service may declare its catalogue public", func(t *testing.T) {

@@ -15,6 +15,9 @@ import (
 // unmarshals another is a protocol bug that only shows up in a client.
 func TestRoundTrip(t *testing.T) {
 	t.Parallel()
+	// The cacheable results name the scope their zero value goes out as: since
+	// CacheScope fills it in on the way out, a round trip of an empty one is not
+	// the identity, and saying so here is the point rather than the nuisance.
 	cases := []struct {
 		name string
 		v    any
@@ -36,11 +39,11 @@ func TestRoundTrip(t *testing.T) {
 			InputSchema: json.RawMessage(`{"type":"object"}`),
 			Annotations: &ToolAnnotations{Title: "Hello", ReadOnlyHint: new(true), DestructiveHint: new(false)},
 		}},
-		{"ToolList", &ToolList{Tools: []Tool{{Name: "a", InputSchema: json.RawMessage(`{}`)}}}},
+		{"ToolList", &ToolList{Tools: []Tool{{Name: "a", InputSchema: json.RawMessage(`{}`)}}, CacheHint: CacheHint{CacheScope: CacheScopePrivate}}},
 		{"ToolCallResult", &ToolCallResult{Content: []ContentBlock{{Type: ContentTypeText, Text: "x"}}, IsError: true}},
-		{"ResourceList", &ResourceList{Resources: []ResourceEntry{{URI: "d://a", Name: "a", Description: "d", MimeType: "text/markdown"}}}},
-		{"ResourceData", &ResourceData{Contents: []ResourceContent{{URI: "d://a", MimeType: "text/markdown", Text: "body"}}}},
-		{"PromptList", &PromptList{Prompts: []PromptEntry{{Name: "p", Description: "d", Arguments: []Argument{{Name: "a", Required: true}}}}}},
+		{"ResourceList", &ResourceList{Resources: []ResourceEntry{{URI: "d://a", Name: "a", Description: "d", MimeType: "text/markdown"}}, CacheHint: CacheHint{CacheScope: CacheScopePrivate}}},
+		{"ResourceData", &ResourceData{Contents: []ResourceContent{{URI: "d://a", MimeType: "text/markdown", Text: "body"}}, CacheHint: CacheHint{CacheScope: CacheScopePrivate}}},
+		{"PromptList", &PromptList{Prompts: []PromptEntry{{Name: "p", Description: "d", Arguments: []Argument{{Name: "a", Required: true}}}}, CacheHint: CacheHint{CacheScope: CacheScopePrivate}}},
 		{"RenderedPrompt", &RenderedPrompt{Description: "d", Messages: []PromptMessage{{Role: RoleUser, Content: PromptMessageContent{Type: ContentTypeText, Text: "t"}}}}},
 	}
 	for _, tc := range cases {
@@ -82,17 +85,38 @@ func newLike(v any) any {
 	panic("newLike: unhandled type")
 }
 
+// The invariant is the type's, not the caller's: every cacheable result built
+// by hand — with no hint set at all — still names a scope on the wire. An empty
+// cacheScope would be worse than an absent one, and the five places that used
+// to fill it in by hand were five places to forget.
+func TestCacheScopeIsFilledInByTheEncoder(t *testing.T) {
+	t.Parallel()
+	for _, v := range []any{
+		ToolList{}, ResourceList{}, PromptList{}, ResourceData{}, DiscoverResult{},
+	} {
+		b, err := json.Marshal(v)
+		require.NoError(t, err)
+		assert.Containsf(t, string(b), `"cacheScope":"private"`, "%T", v)
+		assert.NotContainsf(t, string(b), `"cacheScope":""`, "%T", v)
+	}
+
+	// What the server does say is left alone.
+	b, err := json.Marshal(ToolList{CacheHint: CacheHint{TTLMs: 300_000, CacheScope: CacheScopePublic}})
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"ttlMs":300000,"cacheScope":"public"`)
+}
+
 // Clients with strict schemas reject null where an array was promised, so a
 // list built from an empty slice has to stay a list.
 func TestEmptyListsMarshalAsArrays(t *testing.T) {
 	t.Parallel()
 	cases := map[string]any{
 		`{"resultType":"complete","resources":[],"ttlMs":0,"cacheScope":"private"}`: ResourceList{
-			Resources: []ResourceEntry{}, CacheHint: CacheHint{}.Normalized()},
+			Resources: []ResourceEntry{}, CacheHint: CacheHint{}},
 		`{"resultType":"complete","prompts":[],"ttlMs":0,"cacheScope":"private"}`: PromptList{
-			Prompts: []PromptEntry{}, CacheHint: CacheHint{}.Normalized()},
+			Prompts: []PromptEntry{}, CacheHint: CacheHint{}},
 		`{"resultType":"complete","tools":[],"ttlMs":0,"cacheScope":"private"}`: ToolList{
-			Tools: []Tool{}, CacheHint: CacheHint{}.Normalized()},
+			Tools: []Tool{}, CacheHint: CacheHint{}},
 	}
 	for want, v := range cases {
 		t.Run(want, func(t *testing.T) {
