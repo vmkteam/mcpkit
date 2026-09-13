@@ -41,6 +41,12 @@ type BeforeHook func(ctx context.Context, name string, args map[string]any) cont
 // is, and the record needs fields only the service can fill.
 type AfterHook func(ctx context.Context, name string, res mcp.ToolCallResult, elapsed time.Duration)
 
+// UnknownToolHook renders the refusal for a name this caller cannot call: one
+// that no tool answers to, or one whose Describe said the caller may not see it.
+// visible is the names they may use, which is what the default answer carries as
+// its hint.
+type UnknownToolHook func(ctx context.Context, name string, visible []string) mcp.ToolCallResult
+
 // Option tunes a Registry.
 type Option func(*Registry)
 
@@ -50,6 +56,7 @@ type Registry struct {
 	byName   map[string]Tool
 	before   BeforeHook
 	after    AfterHook
+	unknown  UnknownToolHook
 	hint     mcp.CacheHint
 	pageSize int
 }
@@ -98,6 +105,22 @@ func WithCallHook(before BeforeHook, after AfterHook) Option {
 	return func(r *Registry) {
 		r.before, r.after = before, after
 	}
+}
+
+// WithUnknownTool replaces the refusal for a name this caller cannot call.
+//
+// The default answers CodeUnknownTool with the visible names as its hint, and
+// that is the right default: it tells a model what it may use instead. But this
+// package owns two codes and says that every other one is a word in the
+// service's own vocabulary — and a hard-coded E_UNKNOWN_TOOL is the one place it
+// speaks for the service anyway. A service whose codes are spelt differently, or
+// which wants to tell "no such tool" apart from "your role does not grant it",
+// says so here.
+//
+// Whatever it returns is counted and hooked like any other refusal: the metric
+// is still labelled with the placeholder name, not with what the caller typed.
+func WithUnknownTool(fn UnknownToolHook) Option {
+	return func(r *Registry) { r.unknown = fn }
 }
 
 // With applies options to an existing registry. It exists so that a service can
@@ -163,15 +186,20 @@ func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (
 	if ok {
 		res = t.Call(ctx, args)
 	} else {
-		// The hint is built by asking every other tool whether this caller may
-		// see it. The one just asked is skipped: Describe depends on who is
+		// The names are collected by asking every other tool whether this caller
+		// may see it. The one just asked is skipped: Describe depends on who is
 		// calling and may be doing real work, and the answer for this name is
 		// already known to be no.
-		res = ErrorResult(Error{
-			Code:    CodeUnknownTool,
-			Message: fmt.Sprintf("unknown tool %q", name),
-			Hint:    r.visibleNames(ctx, name),
-		})
+		visible := r.visibleNames(ctx, name)
+		if r.unknown != nil {
+			res = r.unknown(ctx, name, visible)
+		} else {
+			res = ErrorResult(Error{
+				Code:    CodeUnknownTool,
+				Message: fmt.Sprintf("unknown tool %q", name),
+				Hint:    visible,
+			})
+		}
 	}
 	elapsed := time.Since(start)
 

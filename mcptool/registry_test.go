@@ -187,6 +187,37 @@ func TestCall(t *testing.T) {
 		assert.Equal(t, []any{"a"}, e.Hint, "the hint must not name it either")
 	})
 
+	// A service whose error codes are its own gets to answer in them. The two
+	// cases it can tell apart and the default cannot: a name nothing answers to,
+	// and a name this caller may not see.
+	t.Run("WithUnknownTool replaces the refusal", func(t *testing.T) {
+		t.Parallel()
+		secret := okTool("secret")
+		r := NewRegistry(okTool("a"), secret).With(WithUnknownTool(
+			func(_ context.Context, name string, visible []string) mcp.ToolCallResult {
+				code := "NoSuchTool"
+				if slices.Contains([]string{"a", "secret"}, name) {
+					code = "ForbiddenRole"
+				}
+				return ErrorResult(Error{Code: code, Message: name, Hint: visible})
+			}))
+
+		hidden, err := r.Call(withHidden(t.Context(), "secret"), "secret", nil)
+		require.NoError(t, err)
+		require.True(t, hidden.IsError)
+		assert.Nil(t, secret.gotArgs, "an invisible tool must not run, hook or no hook")
+
+		var e Error
+		require.NoError(t, json.Unmarshal([]byte(hidden.Content[0].Text), &e))
+		assert.Equal(t, "ForbiddenRole", e.Code)
+		assert.Equal(t, []any{"a"}, e.Hint, "the visible names are handed over, and still exclude it")
+
+		unknown, err := r.Call(t.Context(), "nope", nil)
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal([]byte(unknown.Content[0].Text), &e))
+		assert.Equal(t, "NoSuchTool", e.Code)
+	})
+
 	t.Run("a tool that refuses answers through the envelope", func(t *testing.T) {
 		t.Parallel()
 		failing := &fakeTool{name: "f", answer: ErrorResult(Error{Code: "E_DOMAIN", Message: "no"})}

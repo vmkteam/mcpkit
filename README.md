@@ -461,6 +461,25 @@ Codes are your vocabulary; the library owns only `E_UNKNOWN_TOOL` and
 `E_ENCODE`. Batching, access rules and budgets stay in the service — they are
 the same idea in three services and not the same code.
 
+`E_UNKNOWN_TOOL` is the one code the library says on your behalf, and
+`WithUnknownTool` takes it back. It answers both the name nothing is registered
+under and the name whose `Describe` hid it — the default cannot tell them apart,
+and a service that wants to say "no such tool" to one and "your role does not
+grant it" to the other says so here:
+
+```go
+mcptool.NewRegistry(tools...).With(mcptool.WithUnknownTool(
+    func(ctx context.Context, name string, visible []string) mcp.ToolCallResult {
+        if slices.Contains(allTools, name) { // registered, but not for this caller
+            return mcptool.ErrorResult(mcptool.Error{Code: "ForbiddenRole", Message: …})
+        }
+        return mcptool.ErrorResult(mcptool.Error{Code: "NoSuchTool", Hint: visible})
+    }))
+```
+
+Hiding it is still the default, and for most servers the right one: telling a
+caller which tools they are missing is an answer they were not meant to get.
+
 `WithCallHook(before, after)` wraps every call: `before` may put a trace id or an
 open audit record in the context, `after` sees the answer including refusals.
 Metric: `app_mcp_tool_calls_total{tool,outcome}` with `ok` and `error`.
