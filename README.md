@@ -428,6 +428,11 @@ subtree prompts. A `*doc.Library` is handed to the services as is. A file with n
 without a description costs the model a call to find out what it is. Two files
 claiming one name fail the load rather than letting walk order decide.
 
+`Entry(uri)` is the half of `Read` that costs nothing: the entry — name, title,
+description, MIME type, size — was indexed at startup, so a tool that only wants
+to say what a document is gets it without opening the file and without keeping a
+second map of the same thing beside the library's.
+
 `{{arg}}` placeholders are rewritten to `{{.arg}}` and rendered by
 `text/template`: whoever writes the markdown is not required to know about Go
 templates.

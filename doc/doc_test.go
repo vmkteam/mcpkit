@@ -165,6 +165,27 @@ func TestRead_AcceptsBarePaths(t *testing.T) {
 	assert.ErrorContains(t, err, "unknown resource")
 }
 
+// Saying what a document is costs nothing: the entry was indexed at startup,
+// and a caller that wants the description has no reason to open the file.
+func TestEntry(t *testing.T) {
+	t.Parallel()
+	l := load(t)
+
+	entry, ok := l.Entry("targets/grafana.md")
+	require.True(t, ok, "a bare path names the same resource Read accepts")
+	assert.Equal(t, testScheme+"targets/grafana.md", entry.URI)
+	assert.Equal(t, "grafana", entry.Name)
+	assert.Equal(t, "Dashboards and panels.", entry.Description)
+	assert.Equal(t, MimeMarkdown, entry.MimeType)
+
+	canonical, ok := l.Entry(testScheme + "targets/grafana.md")
+	require.True(t, ok)
+	assert.Equal(t, entry, canonical)
+
+	_, ok = l.Entry("targets/nope.md")
+	assert.False(t, ok)
+}
+
 func TestNormalizeURI(t *testing.T) {
 	t.Parallel()
 	l := load(t)

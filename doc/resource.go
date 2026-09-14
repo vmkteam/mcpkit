@@ -43,6 +43,22 @@ func (l *Library) NormalizeURI(uri string) string {
 	return l.opts.URIScheme + strings.TrimPrefix(uri, "/")
 }
 
+// Entry returns the catalogue entry of a resource by URI, accepting the
+// canonical URI or the bare path.
+//
+// It is the half of Read that costs nothing. The name, title, description, MIME
+// type and size were indexed at startup, and a caller that only wants to say
+// what a document is — a help tool naming what it can read, a tool quoting the
+// description of the page it is about to point at — has no reason to open the
+// file to find out, nor to keep a second map of the same thing beside this one.
+func (l *Library) Entry(uri string) (mcp.ResourceEntry, bool) {
+	idx, ok := l.byURI[l.NormalizeURI(uri)]
+	if !ok {
+		return mcp.ResourceEntry{}, false
+	}
+	return l.resources[idx], true
+}
+
 // Read returns the bytes and MIME type of a resource by URI, accepting the
 // canonical URI or the bare path.
 func (l *Library) Read(uri string) ([]byte, string, error) {
