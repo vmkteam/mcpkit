@@ -47,9 +47,9 @@ func NewGroup() *Group { return &Group{} }
 // The values are less optional than a variadic makes them look: rate() over a
 // counter that springs into existence with the first event cannot tell "nothing
 // happened" from "nothing was scraped", and the alert worth having is the one
-// about the first event. Passing none is for a label whose values this library
-// cannot enumerate — a tool name, say — and is a decision rather than an
-// oversight.
+// about the first event. Passing none is for a label whose values are not known
+// where the metric is declared, and is a decision rather than an oversight — one
+// that owes the series a warm somewhere else, at the moment they are known.
 func (g *Group) Counter(name, help, label string, values ...string) *prometheus.CounterVec {
 	c := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: Namespace,
@@ -68,10 +68,11 @@ func (g *Group) Counter(name, help, label string, values ...string) *prometheus.
 // CounterVec declares a counter over several labels, and the combinations it
 // starts at zero — one warm per series, each naming a value for every label.
 //
-// Most of a multi-label counter cannot be warmed: a tool name is the service's
-// own, and this library learns it when a call arrives. The combinations it can
-// name are the ones worth naming, because they are the ones an alert fires on
-// before they have ever happened.
+// Not every combination can be named here: a tool name belongs to the service,
+// and a var block runs before any service has said what its tools are. Such a
+// counter is warmed by whoever does learn the values — mcptool warms one series
+// per tool when the registry is built — and what is named here is what the
+// library knows on its own.
 func (g *Group) CounterVec(name, help string, labels []string, warm ...[]string) *prometheus.CounterVec {
 	c := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: Namespace,

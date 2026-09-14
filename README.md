@@ -508,7 +508,11 @@ caller which tools they are missing is an answer they were not meant to get.
 
 `WithCallHook(before, after)` wraps every call: `before` may put a trace id or an
 open audit record in the context, `after` sees the answer including refusals.
-Metric: `app_mcp_tool_calls_total{tool,outcome}` with `ok` and `error`.
+Metric: `app_mcp_tool_calls_total{tool,outcome}` with `ok` and `error`. Both
+series of every tool you register start at zero, from the moment you build the
+registry: `rate(…{outcome="error"}[5m])` on a counter that appears with the first
+failure cannot tell a service that has never failed from one that stopped being
+scraped.
 
 A tool can answer with more than text. `mcp.ImageBlock`, `mcp.AudioBlock`,
 `mcp.ResourceLinkBlock` and `mcp.ResourceBlock` build the other four kinds; the

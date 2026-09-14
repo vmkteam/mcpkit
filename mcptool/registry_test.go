@@ -428,3 +428,31 @@ func TestMetric(t *testing.T) {
 	assert.InDelta(t, 0, testutil.ToFloat64(toolCalls.WithLabelValues("ghost", outcomeError)), 0,
 		"a name the caller invented must not become a series of its own")
 }
+
+// hadSeries reports whether the counter already had this series, and removes it.
+// Removing is what makes it an honest probe: ToFloat64 creates the series it is
+// asked about, so it would conjure the very thing under test and then report the
+// zero it had just made.
+func hadSeries(tool, result string) bool {
+	return toolCalls.DeleteLabelValues(tool, result)
+}
+
+// rate() over a counter that springs into existence with the first event cannot
+// tell "nothing happened" from "nothing was scraped": without the zero, a
+// service that has never failed reads exactly like one that stopped being
+// scraped, and the alert worth having is the one about the first failure.
+func TestMetricStartsAtZero(t *testing.T) {
+	const name = "warmed"
+
+	require.False(t, hadSeries(name, outcomeError), "the series cannot exist before the registry does")
+
+	NewRegistry(okTool(name), &fakeTool{name: name + "-bad"})
+
+	// The value a warmed series carries, read before either is removed below.
+	assert.InDelta(t, 0, testutil.ToFloat64(toolCalls.WithLabelValues(name, outcomeError)), 0)
+
+	assert.True(t, hadSeries(name, outcomeOK), "an ok series before the first success")
+	assert.True(t, hadSeries(name, outcomeError), "an error series before the first failure")
+	assert.True(t, hadSeries(name+"-bad", outcomeOK), "every registered tool, not only the first")
+	assert.True(t, hadSeries(name+"-bad", outcomeError))
+}

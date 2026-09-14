@@ -104,6 +104,7 @@ func NewRegistry(tools ...Tool) *Registry {
 		r.byName[t.Name()] = t
 	}
 	registerMetrics()
+	warmTools(tools)
 	return r
 }
 

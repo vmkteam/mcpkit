@@ -15,11 +15,12 @@ const (
 	outcomeError = "error"
 )
 
-// Only one series starts at zero here, where elsewhere in the library every
-// series does: the tool label is the service's own set of names, and this
-// package does not learn it until a registry is built.
+// One series can be named here, where elsewhere in the library the whole set
+// can: the tool label is the service's own set of names, and a var block runs
+// before any service has said what its tools are. The rest are warmed in
+// warmTools, at the first moment the set exists.
 //
-// The exception is the one name this package owns. Every unregistered name is
+// The one that can is the name this package owns. Every unregistered name is
 // counted as metricNameUnknown, and a caller inventing tool names is worth an
 // alert from the first second rather than from the first invention — which is
 // what the zero buys. It pairs only with outcomeError: an unknown tool is a
@@ -36,6 +37,27 @@ var (
 )
 
 func registerMetrics() { group.Register() }
+
+// warmTools starts both series of every registered tool at zero.
+//
+// This is the rule the rest of the library already keeps, arriving late because
+// it had to: rate() over a counter that springs into existence with the first
+// event cannot tell "nothing happened" from "nothing was scraped", so
+// rate(app_mcp_tool_calls_total{outcome="error"}[5m]) had nothing to rate until
+// the first failure — a service that has never failed read exactly like one that
+// stopped being scraped, and the alert worth having is the one about the first
+// failure.
+//
+// It runs from NewRegistry rather than from the var block above because that is
+// where the names are: the set is the service's, and this package learns it when
+// the registry is built. Both outcomes, because a ratio needs the denominator to
+// exist too.
+func warmTools(tools []Tool) {
+	for _, t := range tools {
+		toolCalls.WithLabelValues(t.Name(), outcomeOK)
+		toolCalls.WithLabelValues(t.Name(), outcomeError)
+	}
+}
 
 // observe counts one dispatch.
 func observe(tool, result string) {
