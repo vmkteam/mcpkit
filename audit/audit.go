@@ -18,9 +18,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
-	"github.com/vmkteam/mcpkit/mcp"
 	"github.com/vmkteam/mcpkit/redact"
 
 	"github.com/vmkteam/embedlog"
@@ -287,7 +285,12 @@ func (w Writer) text(s string, maxRunes int) string {
 	// slack is what keeps masking-before-the-final-cut meaningful — a match
 	// straddling the cap is still whole inside the slack, so the cut cannot
 	// split one and leak half.
-	if cut, ok := mcp.CutRunes(s, maxRunes+CapSlack); ok {
+	//
+	// Counted in the same unit as the cap, because the slack is only a slack if
+	// it is: this used to spend a rune budget in bytes, which on Cyrillic is
+	// half a budget and on CJK a third — a Russian query lost half of itself
+	// here, before masking had run and before the cap it was meant to stop at.
+	if cut, ok := cutRunes(s, maxRunes+CapSlack); ok {
 		s = cut + "…"
 	}
 	masked, _ := w.redactor.Text(s)
@@ -328,23 +331,28 @@ func SanitizeText(s string, maxRunes int) string {
 			b.WriteRune(r)
 		}
 	}
-	out := strings.Join(strings.Fields(b.String()), " ")
-	// Counted, not converted. []rune(out) allocated four bytes per character —
-	// nine kilobytes for a two-kilobyte query — for the sole purpose of learning
-	// how many characters there were, and this runs three times per record.
-	// Walking to the cap costs one slice of the string we already have.
-	if utf8.RuneCountInString(out) > maxRunes {
-		cut, n := len(out), 0
-		for i := range out { // ranging a string yields byte offsets of runes
-			if n == maxRunes {
-				cut = i
-				break
-			}
-			n++
-		}
-		out = out[:cut]
-	}
+	out, _ := cutRunes(strings.Join(strings.Fields(b.String()), " "), maxRunes)
 	return out
+}
+
+// cutRunes cuts s to at most limit runes, reporting whether it cut anything.
+// The unit is characters, not bytes: mcp.CutBytes is the one for a byte budget,
+// and the two are not interchangeable on anything but ASCII.
+//
+// Counted, not converted. []rune(s) allocated four bytes per character — nine
+// kilobytes for a two-kilobyte query — for the sole purpose of learning how many
+// characters there were, and this runs three times per record. Walking to the cap
+// costs one slice of the string we already have, and stops at the cap rather than
+// at the end of a string that may be megabytes.
+func cutRunes(s string, limit int) (string, bool) {
+	n := 0
+	for i := range s { // ranging a string yields byte offsets of runes
+		if n == limit {
+			return s[:i], true
+		}
+		n++
+	}
+	return s, false
 }
 
 // Hash is the first HashLen hex digits of the SHA-256 of the full text, empty

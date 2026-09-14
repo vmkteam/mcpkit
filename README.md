@@ -47,7 +47,7 @@ Four things here that we did not find elsewhere:
 | Package | What it does |
 |---|---|
 | `mcpkit` | The server: MCP Streamable HTTP on `zenrpc.Server` — `tools/list` → `tools.list`, one request per POST, both protocol eras on one endpoint — and the ready-made services `initialize`/`ping`, `server/discover`, `resources.*`, `prompts.*` |
-| `mcp` | The wire format: `Tool`, `ContentBlock`, `Capabilities`, `ResourceEntry`, … plus the revisions and `NegotiateVersion`, the modern era's headers and `_meta` keys, `Paginate`, `DecodeArgs`, `SchemaFor`, `Truncate`, `CutRunes` |
+| `mcp` | The wire format: `Tool`, `ContentBlock`, `Capabilities`, `ResourceEntry`, … plus the revisions and `NegotiateVersion`, the modern era's headers and `_meta` keys, `Paginate`, `DecodeArgs`, `SchemaFor`, `Truncate`, `CutBytes` |
 | `doc` | A tree of markdown with YAML frontmatter, served as resources and prompts |
 | `mcptool` | The tool dispatcher: registry, answer envelope, error with a hint, the call metric |
 | `auth` | Who is asking: api-key store, OIDC verifier, `Principal` in the context, RFC 9728 metadata |
@@ -390,10 +390,12 @@ and prompts rather than three that disagree about what an invalid cursor is.
 
 The rest are the helpers every dispatcher needs: `DecodeArgs` (the argument map
 into your struct), `SchemaFor` (a JSON Schema reflected from that same struct,
-once, at startup) and `Truncate` / `CutRunes` (a cut on a rune boundary, because
-a byte slice of UTF-8 breaks the JSON that carries it — every cut in this
-library goes through one of the two, since the one that did not was the one that
-was wrong).
+once, at startup) and `Truncate` / `CutBytes` (a byte budget spent on a rune
+boundary, because a byte slice of UTF-8 breaks the JSON that carries it — every
+cut in this library goes through one of the two, since the one that did not was
+the one that was wrong). The name says bytes because the budget is bytes: a cap
+counted in characters is a different unit, and the caller that spent one in the
+other cut a Cyrillic query at half of it.
 
 `mcpkit` has the three services nobody writes differently. `initialize` takes a
 flat `protocolVersion` argument — MCP sends the handshake as a flat object, and

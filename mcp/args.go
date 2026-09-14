@@ -52,7 +52,7 @@ func SchemaFor(v any) json.RawMessage {
 	return out
 }
 
-// CutRunes cuts s to at most limit bytes without splitting a rune, reporting
+// CutBytes cuts s to at most limit bytes without splitting a rune, reporting
 // whether it cut anything. It appends nothing: what marks the cut — a marker
 // the model reads, an ellipsis a human reads — belongs to whoever is doing the
 // cutting.
@@ -61,7 +61,12 @@ func SchemaFor(v any) json.RawMessage {
 // and, with it, the JSON document carrying the character. Every cut in this
 // library goes through here, because the one that did not was the one that was
 // wrong.
-func CutRunes(s string, limit int) (string, bool) {
+//
+// The limit is a byte budget, and the name says so. It used to say runes, and
+// the caller that read it that way — the audit, capping a query at so many
+// characters — spent a rune budget in bytes and cut a Cyrillic query at half of
+// it.
+func CutBytes(s string, limit int) (string, bool) {
 	if limit <= 0 || len(s) <= limit {
 		return s, false
 	}
@@ -76,7 +81,7 @@ func CutRunes(s string, limit int) (string, bool) {
 // reporting whether it cut and how long the original was.
 func Truncate(s string, limit int) (out string, cut bool, total int) {
 	total = len(s)
-	out, cut = CutRunes(s, limit)
+	out, cut = CutBytes(s, limit)
 	if cut {
 		out += TruncateMarker
 	}

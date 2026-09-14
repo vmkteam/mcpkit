@@ -4,7 +4,7 @@
 //
 // Beside them it carries the pure functions that describe the protocol rather
 // than any one server's use of it — the revisions and NegotiateVersion, plus
-// DecodeArgs, SchemaFor, Truncate and CutRunes. No I/O, no state, and nothing
+// DecodeArgs, SchemaFor, Truncate and CutBytes. No I/O, no state, and nothing
 // that depends on another package here: what a server does with a Tool, where a
 // ResourceEntry comes from, what an instruction says all belong to the packages
 // above and to the service.

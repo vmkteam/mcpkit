@@ -25,7 +25,9 @@ import (
 // DefaultPromptsDir is the subtree that holds prompts when Options names none.
 const DefaultPromptsDir = "prompts"
 
-// DefaultDescMaxLen caps a description derived from the body of a file.
+// DefaultDescMaxLen caps, in bytes, a description derived from the body of a
+// file. Bytes and not characters because what this cap protects is the size of
+// resources/list, which every client pays for on connect.
 const DefaultDescMaxLen = 240
 
 // Options configures Load.
@@ -36,7 +38,7 @@ type Options struct {
 	// PromptsDir is the one subtree that holds prompts. Empty means
 	// DefaultPromptsDir.
 	PromptsDir string
-	// DescMaxLen caps a description derived from the body; 0 means
+	// DescMaxLen caps, in bytes, a description derived from the body; 0 means
 	// DefaultDescMaxLen.
 	DescMaxLen int
 }
@@ -160,7 +162,7 @@ func (l *Library) scanFrontmatter(data []byte) (name, title, description string)
 	// resources/list as JSON, and a cut through the middle of a character makes
 	// the encoder substitute U+FFFD for the half it got. Every non-ASCII
 	// description longer than the cap hit that.
-	if cut, ok := mcp.CutRunes(desc, l.opts.DescMaxLen); ok {
+	if cut, ok := mcp.CutBytes(desc, l.opts.DescMaxLen); ok {
 		desc = cut + "..."
 	}
 	return meta.Name, meta.Title, desc

@@ -298,6 +298,21 @@ func TestSanitizeTextCapsRunesNotBytes(t *testing.T) {
 	assert.Len(t, []rune(out), 4)
 }
 
+// The cap is a number of characters, and so is the slack that feeds it. Spent
+// in bytes, it cut a Russian query at half its budget: the pre-cut kept
+// MaxTextLen+CapSlack bytes of a string two bytes per character, and the cap it
+// was meant to hand a whole query to never got to be the thing that cut.
+func TestWrite_CapsAQueryInRunesNotBytes(t *testing.T) {
+	long := strings.Repeat("ы", MaxTextLen*2)
+	recs := capture(t, Options{}, func(w Writer) {
+		w.Write(t.Context(), Record{Query: long})
+	})
+	require.Len(t, recs, 1)
+
+	query, _ := recs[0]["query"].(string)
+	assert.Len(t, []rune(query), MaxTextLen, "a Cyrillic query gets the whole character budget")
+}
+
 func TestHash(t *testing.T) {
 	t.Parallel()
 	assert.Empty(t, Hash(""))
