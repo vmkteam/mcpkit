@@ -451,6 +451,23 @@ not exist.
 The list is computed per request and keeps the order you built it in: the model
 reads it top to bottom, and a cached list hands one user the tools of another.
 
+`tools/call` needs only the bool of that answer, and so does the hint of a
+refusal — which asks it of every tool you registered. A tool whose description
+costs a template render, a catalogue lookup or a reflected schema can answer the
+cheap question cheaply:
+
+```go
+type Visibility interface {
+    Visible(ctx context.Context) bool
+}
+```
+
+It is optional: a tool that does not implement it is asked `Describe` and its
+bool taken, as before. It does not remove the check — `tools/call` still refuses
+what you cannot see — it only stops paying for a description nobody reads. The
+two must agree, or a caller gets to dispatch a tool that never appears in their
+list.
+
 An error is documentation, so it carries a hint:
 
 ```go

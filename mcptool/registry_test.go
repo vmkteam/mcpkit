@@ -59,6 +59,75 @@ func okTool(name string) *fakeTool {
 	return &fakeTool{name: name, answer: OKResult(map[string]string{"tool": name})}
 }
 
+// visibleTool answers the cheap question cheaply and counts the times it was
+// made to answer the expensive one instead. A real tool pays a template render
+// or a reflected schema for a Describe it only wanted the bool of.
+type visibleTool struct {
+	fakeTool
+	describes int
+}
+
+func (v *visibleTool) Describe(ctx context.Context) (mcp.Tool, bool) {
+	v.describes++
+	return v.fakeTool.Describe(ctx)
+}
+
+func (v *visibleTool) Visible(context.Context) bool { return !v.hidden }
+
+func TestVisibility(t *testing.T) {
+	t.Parallel()
+
+	t.Run("dispatch asks Visible and builds no description", func(t *testing.T) {
+		t.Parallel()
+		v := &visibleTool{fakeTool: fakeTool{name: "cheap", answer: OKResult("done")}}
+		r := NewRegistry(v)
+
+		res, err := r.Call(t.Context(), "cheap", nil)
+		require.NoError(t, err)
+		require.False(t, res.IsError)
+		assert.Zero(t, v.describes, "a description was built to answer a yes or no")
+
+		// tools/list is the one place the description is the answer.
+		_, err = r.List(t.Context(), "")
+		require.NoError(t, err)
+		assert.Equal(t, 1, v.describes)
+	})
+
+	// The refusal path is the one that asks about every tool, and it is the path
+	// a caller probing for what their role hides takes over and over.
+	t.Run("the hint asks Visible of the others", func(t *testing.T) {
+		t.Parallel()
+		hidden := &visibleTool{fakeTool: fakeTool{name: "secret", hidden: true}}
+		shown := &visibleTool{fakeTool: fakeTool{name: "shown", answer: OKResult("done")}}
+		r := NewRegistry(hidden, shown)
+
+		res, err := r.Call(t.Context(), "secret", nil)
+		require.NoError(t, err)
+		require.True(t, res.IsError)
+		assert.Nil(t, hidden.gotArgs, "an invisible tool must not run")
+		assert.Zero(t, hidden.describes)
+		assert.Zero(t, shown.describes)
+
+		var e Error
+		require.NoError(t, json.Unmarshal([]byte(res.Content[0].Text), &e))
+		assert.Equal(t, CodeUnknownTool, e.Code)
+		assert.Equal(t, []any{"shown"}, e.Hint)
+	})
+
+	// The interface is optional, and the registry this library shipped with has
+	// only Tool in it.
+	t.Run("a tool without it is asked Describe", func(t *testing.T) {
+		t.Parallel()
+		secret := okTool("secret")
+		r := NewRegistry(okTool("a"), secret)
+
+		res, err := r.Call(withHidden(t.Context(), "secret"), "secret", nil)
+		require.NoError(t, err)
+		require.True(t, res.IsError)
+		assert.Nil(t, secret.gotArgs)
+	})
+}
+
 func TestList(t *testing.T) {
 	t.Parallel()
 

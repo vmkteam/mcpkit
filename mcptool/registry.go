@@ -6,8 +6,9 @@
 // its answer travels in, the metric, and the place to hang an audit.
 //
 // Visibility is the tool's own answer, not the registry's: Describe reports
-// whether this caller may see it at all, so the registry never learns what a
-// role is.
+// whether this caller may see it at all — or Visible does, for a tool that
+// would rather not build a description to say no — so the registry never learns
+// what a role is.
 package mcptool
 
 import (
@@ -29,6 +30,33 @@ type Tool interface {
 	Name() string
 	Describe(ctx context.Context) (mcp.Tool, bool)
 	Call(ctx context.Context, args map[string]any) mcp.ToolCallResult
+}
+
+// Visibility is the half of Describe the dispatch path actually needs, and a
+// Tool may implement it beside Describe.
+//
+// tools/call wants the yes or no; the hint of a refusal wants one per tool. A
+// tool that answers both by building its description pays for a template, a
+// catalogue lookup or a reflected schema and has all of it thrown away — once
+// per tool on every refused call, which is the path a caller probing for tools
+// their role hides takes over and over.
+//
+// A tool that does not implement it is asked Describe and its bool taken, which
+// is what the registry has always done. The two must agree: Visible reporting
+// true where Describe hides the tool would let a caller dispatch something that
+// never appears in their tools/list.
+type Visibility interface {
+	Visible(ctx context.Context) bool
+}
+
+// visible is the only question the dispatch path asks about a tool, asked the
+// cheapest way the tool offers.
+func visible(ctx context.Context, t Tool) bool {
+	if v, ok := t.(Visibility); ok {
+		return v.Visible(ctx)
+	}
+	_, ok := t.Describe(ctx)
+	return ok
 }
 
 // BeforeHook runs before a tool is called and may return a context carrying
@@ -169,8 +197,7 @@ func (r *Registry) List(ctx context.Context, cursor string) (mcp.ToolList, error
 func (r *Registry) Call(ctx context.Context, name string, args map[string]any) (mcp.ToolCallResult, error) {
 	t, ok := r.byName[name]
 	if ok {
-		_, visible := t.Describe(ctx)
-		ok = visible
+		ok = visible(ctx, t)
 	}
 
 	// The hooks wrap the refusal too. AfterHook says it runs "including when it
@@ -242,7 +269,7 @@ func (r *Registry) visibleNames(ctx context.Context, except string) []string {
 		if t.Name() == except {
 			continue
 		}
-		if _, ok := t.Describe(ctx); ok {
+		if visible(ctx, t) {
 			out = append(out, t.Name())
 		}
 	}
