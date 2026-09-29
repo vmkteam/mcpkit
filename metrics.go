@@ -22,6 +22,8 @@ const (
 	reasonHeaderMismatch = "header_mismatch"
 	reasonBadVersion     = "bad_version"
 	reasonMissingMeta    = "missing_meta"
+	reasonRepeatedKey    = "repeated_key"
+	reasonMissingID      = "missing_id"
 )
 
 // era labels on app_mcp_requests_total.
@@ -41,7 +43,7 @@ var (
 		"reason",
 		reasonBatch, reasonParse, reasonTooLarge,
 		reasonReadBody, reasonDispatch, reasonBadMethod, reasonOrigin, reasonHost,
-		reasonHeaderMismatch, reasonBadVersion, reasonMissingMeta,
+		reasonHeaderMismatch, reasonBadVersion, reasonMissingMeta, reasonRepeatedKey, reasonMissingID,
 	)
 
 	// Which era clients actually speak. This is the number that decides when

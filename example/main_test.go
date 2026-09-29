@@ -2,15 +2,22 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/vmkteam/mcpkit"
 	"github.com/vmkteam/mcpkit/doc"
 	"github.com/vmkteam/mcpkit/mcp"
 	"github.com/vmkteam/mcpkit/mcptest"
+	"github.com/vmkteam/mcpkit/mcptool"
+	"github.com/vmkteam/mcpkit/ratelimit"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vmkteam/embedlog"
+	"github.com/vmkteam/zenrpc/v2"
 )
 
 const testKey = "test-token"
@@ -131,4 +138,66 @@ func TestExampleRefusesAnUnauthenticatedCall(t *testing.T) {
 	res := mcptest.New(t, h).Call(t, "tools/list", nil)
 	assert.Equal(t, http.StatusUnauthorized, res.Status)
 	assert.NotEmpty(t, res.Header.Get("WWW-Authenticate"), "a 401 has to say how to authenticate")
+}
+
+// A denial has to reach the client as an answer to its call, through the
+// transport and in either era — the limiter's own tests stop at a stub
+// handler. The example allows sixty calls a minute, so the burst runs out
+// within the loop.
+func TestExampleRefusalAnswersTheCall(t *testing.T) {
+	t.Parallel()
+	for _, era := range []mcptest.Era{mcptest.Modern, mcptest.Legacy} {
+		t.Run(string(era), func(t *testing.T) {
+			t.Parallel()
+			c := serve(t, era)
+			hello := map[string]any{"name": "hello", "arguments": map[string]any{}}
+
+			var res mcptest.Response
+			for range 70 {
+				if res = c.Call(t, "tools/call", hello); res.Status != http.StatusOK {
+					break
+				}
+			}
+			require.Equal(t, http.StatusTooManyRequests, res.Status, "%s", res.Body)
+			assert.Equal(t, "application/json", res.Header.Get("Content-Type"))
+			assert.NotEmpty(t, res.Header.Get("Retry-After"))
+			require.NotNil(t, res.Error, "%s", res.Body)
+			assert.Equal(t, mcp.CodeRateLimited, res.Error.Code)
+			assert.Contains(t, string(res.Error.Data), `"reason":"rpm"`)
+		})
+	}
+}
+
+// An exempt name cannot be borrowed by repeating the key it is read from, in
+// the same case or another: the limiter reads the first, the dispatcher runs
+// the last. Built here rather
+// than through newMCP, because it needs an exemption and a spent budget.
+func TestExampleExemptionCannotBeBorrowed(t *testing.T) {
+	t.Parallel()
+	zsrv := zenrpc.NewServer(zenrpc.Options{})
+	zsrv.RegisterAll(map[string]zenrpc.Invoker{
+		mcpkit.NamespaceTools: ToolsService{registry: mcptool.NewRegistry(helloTool{})},
+	})
+	limiter := ratelimit.New(ratelimit.Config{
+		CostBudgetPerHour: time.Nanosecond, // the first call spends it
+		Exempt:            func(_, name string) bool { return name == "help" },
+	})
+	t.Cleanup(limiter.Stop)
+	h := limiter.Middleware(mcpkit.NewServer(zsrv, embedlog.Logger{}), embedlog.Logger{})
+
+	post := func(body string) int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body)))
+		return rec.Code
+	}
+	hello := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hello","arguments":{}}}`
+	require.Equal(t, http.StatusOK, post(hello))
+	require.Equal(t, http.StatusTooManyRequests, post(hello), "the budget is spent")
+
+	for _, borrowed := range []string{
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"help","name":"hello","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"help","Name":"hello","arguments":{}}}`,
+	} {
+		assert.NotEqual(t, http.StatusOK, post(borrowed), "hello ran under help's exemption: %s", borrowed)
+	}
 }

@@ -137,7 +137,7 @@ func TestPerUserConcurrentReleasesEverySlot(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}), embedlog.Logger{})
 
-	call := func() int {
+	send := func() int {
 		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{}"))
 		req = req.WithContext(auth.NewContext(req.Context(), auth.Principal{UserID: "alice"}))
 		rec := httptest.NewRecorder()
@@ -147,14 +147,14 @@ func TestPerUserConcurrentReleasesEverySlot(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range burst {
-		wg.Go(func() { call() })
+		wg.Go(func() { send() })
 	}
 	wg.Wait()
 
 	assert.LessOrEqual(t, peak.Load(), int64(limit), "PerUserConcurrent exceeded")
 
 	// Every slot came back: the next request is served, not refused.
-	assert.Equal(t, http.StatusOK, call(), "a slot was leaked — the caller is throttled forever")
+	assert.Equal(t, http.StatusOK, send(), "a slot was leaked — the caller is throttled forever")
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -184,7 +184,7 @@ func TestAcquireAndEvictRunTogether(t *testing.T) {
 		wg.Go(func() {
 			user := "user-" + string(rune('a'+i))
 			for range 100 {
-				release, reason := l.acquire(user, time.Now())
+				release, reason := l.acquire(user, time.Now(), false)
 				if release == nil {
 					require.NotEmpty(t, reason)
 					continue
@@ -205,7 +205,7 @@ func TestEvictSkipsBusyWithoutAConcurrencyLimit(t *testing.T) {
 	l := newLimiter(t, Config{CostBudgetPerHour: time.Hour})
 	now := time.Now()
 
-	release, reason := l.acquire("alice", now)
+	release, reason := l.acquire("alice", now, false)
 	require.NotNil(t, release, reason)
 
 	l.evictIdle(now.Add(idleTTL + time.Hour))
@@ -221,4 +221,37 @@ func TestEvictSkipsBusyWithoutAConcurrencyLimit(t *testing.T) {
 
 	l.evictIdle(now.Add(idleTTL + time.Hour))
 	assert.NotContains(t, l.entries, "alice", "once released it is idle and goes")
+}
+
+// Remaining reads the entry that release is writing, from requests of one
+// caller that run at once. Each sees a consistent snapshot — at least its own
+// charge, at most everyone's — and once all are done the budget is the sum.
+func TestRemainingUnderConcurrency(t *testing.T) {
+	const callers = 16
+	l := newLimiter(t, Config{CostBudgetPerHour: time.Hour})
+
+	var bad atomic.Int64
+	h := l.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Charge(r.Context(), time.Second)
+		b, ok := Remaining(r.Context())
+		if !ok || b.Used < time.Second || b.Used > callers*time.Second {
+			bad.Add(1)
+		}
+		w.WriteHeader(http.StatusOK)
+	}), embedlog.Logger{})
+
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Go(func() {
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader("{}"))
+			req = req.WithContext(auth.NewContext(req.Context(), auth.Principal{UserID: "alice"}))
+			h.ServeHTTP(httptest.NewRecorder(), req)
+		})
+	}
+	wg.Wait()
+
+	assert.Zero(t, bad.Load(), "a snapshot outside what the requests could have spent")
+	b, ok := l.budget("alice", 0, time.Now())
+	require.True(t, ok)
+	assert.Equal(t, callers*time.Second, b.Used)
 }

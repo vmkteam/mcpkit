@@ -4,11 +4,14 @@ package mcpkit
 // what it refuses is in the package comment; what follows is the handler.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/vmkteam/mcpkit/mcp"
 
@@ -148,7 +151,9 @@ func (s *Server) hostAllowed(r *http.Request) bool {
 	return false
 }
 
-func (s *Server) handlePOST(w http.ResponseWriter, r *http.Request) {
+// readRequest reads the one request a POST carries and parses it, answering
+// the refusal itself when there is no such request to read.
+func (s *Server) readRequest(w http.ResponseWriter, r *http.Request) (body []byte, v *fastjson.Value, ok bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, s.opts.MaxRequestBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -156,11 +161,11 @@ func (s *Server) handlePOST(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &mbe) {
 			rejected(reasonTooLarge)
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
+			return nil, nil, false
 		}
 		rejected(reasonReadBody)
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
-		return
+		return nil, nil, false
 	}
 
 	// One request per POST. MCP dropped JSON-RPC batching in 2025-06-18, and
@@ -173,18 +178,50 @@ func (s *Server) handlePOST(w http.ResponseWriter, r *http.Request) {
 	if isBatch(body) {
 		rejected(reasonBatch)
 		http.Error(w, "JSON-RPC batches are not supported: send one request per POST", http.StatusBadRequest)
-		return
+		return nil, nil, false
 	}
 
 	// One parse for the whole path. The three questions this handler asks of the
 	// body — does the method carry a slash, is there an id, what did the client
 	// say on initialize — used to be three more parses of the same bytes on top
 	// of this one.
-	var p fastjson.Parser
-	v, err := p.ParseBytes(body)
+	v, err = fastjson.ParseBytes(body)
 	if err != nil {
 		rejected(reasonParse)
 		http.Error(w, "parse jsonrpc: "+err.Error(), http.StatusBadRequest)
+		return nil, nil, false
+	}
+
+	// A member named twice where this handler reads the request has no reading
+	// that is safe to pick. fastjson, which answers every question asked here,
+	// takes the first, and by exact bytes; encoding/json, which decodes the call
+	// for zenrpc, takes the last, and without regard to case. Mcp-Name checked
+	// against one name while the other runs is the very hole the header exists
+	// to close.
+	if repeatsKey(v) {
+		rejected(reasonRepeatedKey)
+		http.Error(w, "parse jsonrpc: a member is named twice", http.StatusBadRequest)
+		return nil, nil, false
+	}
+
+	return body, v, true
+}
+
+func (s *Server) handlePOST(w http.ResponseWriter, r *http.Request) {
+	body, v, ok := s.readRequest(w, r)
+	if !ok {
+		return
+	}
+
+	// A notification is a method that asks for no answer, and MCP names every
+	// one of them notifications/…. Anything else without an id is a call whose
+	// answer nobody will read, and zenrpc would run it detached, after this
+	// handler has returned: outside the limiter's concurrency slot and past the
+	// settling of its budget, so a tool called that way ran for free. "If the
+	// server cannot accept the input, it MUST return an HTTP error status code."
+	if isNotification(v) && !bytes.HasPrefix(v.GetStringBytes("method"), []byte("notifications/")) {
+		rejected(reasonMissingID)
+		http.Error(w, "a request needs an id: only notifications/* go without one", http.StatusBadRequest)
 		return
 	}
 
@@ -372,6 +409,73 @@ func setProtocolVersion(w http.ResponseWriter, r *http.Request) {
 	if v := r.Header.Get("Mcp-Protocol-Version"); v != "" {
 		w.Header().Set("Mcp-Protocol-Version", mcp.NegotiateVersion(v))
 	}
+}
+
+// repeatsKey reports whether the request names a member twice in an object this
+// handler reads: the envelope, its params, their _meta. Tool arguments are not
+// among them — nothing here reads those, and only zenrpc decodes them.
+//
+// Twice as encoding/json counts, which matches a member to a field without
+// regard to case, Unicode folding included: "name" and "Name", or "params" and
+// "paramſ", are one member to the decoder behind and two to fastjson.
+func repeatsKey(v *fastjson.Value) bool {
+	for _, o := range [...]*fastjson.Value{v, v.Get("params"), v.Get("params", "_meta")} {
+		if o != nil && o.Type() == fastjson.TypeObject && repeatsMember(o.GetObject()) {
+			return true
+		}
+	}
+	return false
+}
+
+// pairwiseMembers is how many members an object can have and still be checked
+// by comparing every pair.
+const pairwiseMembers = 16
+
+// repeatsMember reports whether two members of o fold to the same name. An
+// honest object holds a handful of members and is compared pair by pair, on
+// fastjson's own bytes, without an allocation. A larger one is folded into a
+// set: a megabyte of distinct members compared pairwise was seconds of CPU.
+func repeatsMember(o *fastjson.Object) bool {
+	repeated := false
+	if o.Len() <= pairwiseMembers {
+		var buf [pairwiseMembers][]byte
+		seen := buf[:0]
+		o.Visit(func(k []byte, _ *fastjson.Value) {
+			for _, s := range seen {
+				if bytes.EqualFold(s, k) {
+					repeated = true
+				}
+			}
+			seen = append(seen, k)
+		})
+		return repeated
+	}
+
+	seen := make(map[string]struct{}, o.Len())
+	o.Visit(func(k []byte, _ *fastjson.Value) {
+		f := foldName(k)
+		if _, ok := seen[f]; ok {
+			repeated = true
+		}
+		seen[f] = struct{}{}
+	})
+	return repeated
+}
+
+// foldName spells k the same way for every name bytes.EqualFold holds equal to
+// it: each rune becomes the smallest of its fold orbit, as encoding/json folds.
+func foldName(k []byte) string {
+	b := make([]byte, 0, len(k))
+	for len(k) > 0 {
+		r, n := utf8.DecodeRune(k)
+		k = k[n:]
+		// SimpleFold walks the orbit upward and wraps around to its smallest.
+		for next := unicode.SimpleFold(r); next > r; next = unicode.SimpleFold(r) {
+			r = next
+		}
+		b = utf8.AppendRune(b, unicode.SimpleFold(r))
+	}
+	return string(b)
 }
 
 // isBatch reports whether the body is a JSON array — a batch, which this

@@ -48,6 +48,17 @@ const (
 	CodeUnsupportedProtocolVersion      = -32022
 )
 
+// Error codes this library defines itself. JSON-RPC leaves -32000..-32099 to
+// the implementation, the spec has taken -32020 upward (above), and that leaves
+// -32000..-32019 to us. Nothing in mcpkit or in the services built on it
+// emitted a code from there when the first one was taken, so this list is the
+// whole of what is in use.
+const (
+	// CodeRateLimited is a request the rate limiter turned away. Its data says
+	// which limit it was and how many seconds until it is worth asking again.
+	CodeRateLimited = -32010
+)
+
 // The sentinel wrapping a header value that cannot be written as plain ASCII.
 const (
 	base64Prefix = "=?base64?"

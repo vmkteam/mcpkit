@@ -4,6 +4,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 )
@@ -54,6 +55,17 @@ func TestGaugeStartsItsSeriesAtZero(t *testing.T) {
 
 	g.Register()
 	assert.Equal(t, 2, testutil.CollectAndCount(gauge))
+}
+
+func TestHistogramStartsItsSeriesAtZero(t *testing.T) {
+	t.Parallel()
+	g := NewGroup()
+	h := g.Histogram("warmed_seconds", "help.", "label", []float64{1, 10}, "a", "b")
+
+	assert.Equal(t, 0, testutil.CollectAndCount(h), "nothing exists before Register")
+	g.Register()
+	assert.Equal(t, 2, testutil.CollectAndCount(h), "one series per value, from the start")
+	assert.Contains(t, h.WithLabelValues("a").(prometheus.Metric).Desc().String(), "app_mcp_warmed_seconds")
 }
 
 // Register is called from every entry point that touches a metric, so it is

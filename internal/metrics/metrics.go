@@ -104,6 +104,24 @@ func (g *Group) Gauge(name, help, label string, values ...string) *prometheus.Ga
 	return gv
 }
 
+// Histogram declares a histogram with one label, and the series it starts at
+// zero.
+func (g *Group) Histogram(name, help, label string, buckets []float64, values ...string) *prometheus.HistogramVec {
+	h := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: Namespace,
+		Subsystem: Subsystem,
+		Name:      name,
+		Help:      help,
+		Buckets:   buckets,
+	}, []string{label})
+	g.add(h, func() {
+		for _, v := range values {
+			h.WithLabelValues(v)
+		}
+	})
+	return h
+}
+
 // add collects a metric and how to warm it. It runs while the declaring
 // package's var block does, which is before anything can reach Register: the
 // slices are unguarded because at that point there is nobody to guard them

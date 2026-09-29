@@ -315,7 +315,17 @@ func (helloTool) Call(ctx context.Context, args map[string]any) mcp.ToolCallResu
 	if a.Who == "" {
 		a.Who = "stranger"
 	}
+
+	// A tool that does work upstream says what it cost and where it went: the
+	// budget is spent by it, and app_mcp_ratelimit_charge_seconds is broken
+	// down by the label. The label names a target from the service's own
+	// catalogue, never a value from the request. A greeting costs next to
+	// nothing; the call is here to show where a real tool puts it.
+	start := time.Now()
+	greeting := "hello, " + a.Who
+	ratelimit.ChargeFor(ctx, "greeter", time.Since(start))
+
 	// A struct rather than a map: the same type the output schema was reflected
 	// from, so the answer cannot drift from what the tool promised.
-	return mcptool.OKResult(helloResult{Greeting: "hello, " + a.Who})
+	return mcptool.OKResult(helloResult{Greeting: greeting})
 }
