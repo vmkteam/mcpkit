@@ -161,11 +161,11 @@ func TestOptions(t *testing.T) {
 	t.Run("client identity and capabilities are the caller's to set", func(t *testing.T) {
 		t.Parallel()
 		c, got := recorder(t,
-			WithClientInfo("ringsrv-test", "2.0"),
+			WithClientInfo("example-client", "2.0"),
 			WithClientCapabilities(map[string]any{"roots": map[string]any{}}))
 		c.Call(t, "tools/list", nil)
 		meta := got.meta(t)
-		assert.Equal(t, map[string]any{"name": "ringsrv-test", "version": "2.0"}, meta[mcp.MetaClientInfo])
+		assert.Equal(t, map[string]any{"name": "example-client", "version": "2.0"}, meta[mcp.MetaClientInfo])
 		assert.Contains(t, meta[mcp.MetaClientCapabilities], "roots")
 	})
 

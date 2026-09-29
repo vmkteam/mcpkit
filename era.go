@@ -158,27 +158,18 @@ func metaString(v *fastjson.Value, key string) string {
 // and always a 400 — every refusal decided before dispatch is one, which is why
 // fault carries no status of its own.
 //
-// The id is echoed exactly as it arrived — "error responses MUST include the
-// same ID as the request they correspond to" — and a request whose id could not
-// be read gets null, which is what JSON-RPC asks for.
+// The envelope is zenrpc's, the one every dispatched error goes out in, so a
+// refusal here cannot come out in a shape of its own. The id is echoed exactly
+// as it arrived — "error responses MUST include the same ID as the request they
+// correspond to" — and a request whose id could not be read gets null, which is
+// what JSON-RPC asks for.
 func writeFault(w http.ResponseWriter, id *fastjson.Value, f fault) {
-	body := struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Error   struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-			Data    any    `json:"data,omitempty"`
-		} `json:"error"`
-	}{JSONRPC: "2.0", ID: json.RawMessage("null")}
+	var raw *json.RawMessage
 	if id != nil {
-		body.ID = id.MarshalTo(nil)
+		b := json.RawMessage(id.MarshalTo(nil))
+		raw = &b
 	}
-	body.Error.Code = f.code
-	body.Error.Message = f.message
-	body.Error.Data = f.data
-
-	b, err := json.Marshal(body)
+	b, err := json.Marshal(zenrpc.NewResponseError(raw, f.code, f.message, f.data))
 	if err != nil { // a fixed shape plus data the caller supplied
 		http.Error(w, f.message, http.StatusBadRequest)
 		return

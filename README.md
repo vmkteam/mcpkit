@@ -58,7 +58,7 @@ Four things here that we did not find elsewhere:
 | `audit` | One record per call — who asked, what was decided, what came out |
 
 Dependencies run strictly downward: `mcpkit` → `mcp`; `doc` → `mcp`; `mcptool` →
-`mcp`; `mcptest` → `mcp`; `ratelimit` → `auth`; `audit` → `redact`. Nothing points back up, `mcp`
+`mcp`; `mcptest` → `mcp`; `ratelimit` → `auth`, `mcp`; `audit` → `redact`. Nothing points back up, `mcp`
 depends on nothing, and `auth` is imported by exactly one package — `ratelimit`,
 which keys its buckets on the principal. The server, the dispatcher and the
 catalogues never learn who is asking.
@@ -133,7 +133,9 @@ curl -s localhost:8075/mcp -H 'Authorization: Bearer demo-token' \
 
 One endpoint. `POST` is a JSON-RPC 2.0 request and always gets a synchronous
 JSON response; a notification — no `id`, or a null one — is dispatched and
-answered with `202` and an empty body. `GET` and `DELETE` are `405` with
+answered with `202` and an empty body. Only `notifications/*` go without an id:
+any other method without one is a `400`, since its answer would be read by
+nobody and its work would run past the rate limiter. `GET` and `DELETE` are `405` with
 `Allow: POST`: the server pushes nothing and holds no session, and saying so is
 better than opening a stream that dies. A JSON array in the body — a JSON-RPC
 batch — is `400`, and a body over 4 MiB is `413`.
@@ -274,8 +276,11 @@ whoever knows it.
 
 Metrics: `app_mcp_transport_rejected_total{reason}` — `batch`, `parse`,
 `too_large`, `read_body`, `dispatch`, `method_not_allowed`, `origin`, `host`,
-plus the modern-era refusals `header_mismatch`, `bad_version`, `missing_meta`; and
-`app_mcp_requests_total{era}`, which is how you find out whether
+plus the modern-era refusals `header_mismatch`, `bad_version`, `missing_meta`, and
+`repeated_key` — a member named twice, in any case, in the envelope, its params
+or their `_meta`, which this transport and the decoder behind it would read
+differently — and `missing_id`, a call other than a notification sent without an
+id; and `app_mcp_requests_total{era}`, which is how you find out whether
 anything still speaks the old one. A request refused here reaches no handler and
 appears in no other series, so without these counters a client that speaks the
 wrong dialect is invisible.
@@ -339,7 +344,38 @@ defer limiter.Stop()
 Each limit is switched off by a value ≤ 0; with all four off `Middleware`
 returns your handler unwrapped. Only `POST` is counted — the listening `GET`
 would hold a concurrency slot for the lifetime of a bridge and drain the bucket
-by reconnecting. A denial is `429` with `Retry-After: 10`.
+by reconnecting.
+
+A denial is a `429` carrying a JSON-RPC error to the refused call, so a client
+can show it as a failed call with a reason rather than as a server that went
+away:
+
+```json
+{"jsonrpc":"2.0","id":7,"error":{"code":-32010,"message":"rate limit: cost_budget",
+ "data":{"reason":"cost_budget","retry_after":1847,"budget_used":"30m2s","budget_limit":"30m","window":"1h"}}}
+```
+
+`retry_after` and the `Retry-After` header are the same honest wait: until the
+window rolls for the budget, until the next token for the rate, a second for a
+concurrency slot. The budget fields are there whenever the budget is on. A body
+with no id to answer — a notification, a batch, not JSON, too large to look
+into — gets the plain-text `429` instead: a refusal reads at most 64 KiB of a
+body, so that shedding load costs less than serving it.
+
+A help tool or a static resource is what teaches a caller to spend less, and
+once the budget is gone it would be the first thing to stop answering. `Exempt`
+spares such calls the budget — only the budget: they still take a rate token
+and a concurrency slot.
+
+```go
+Exempt: func(method, name string) bool {
+    return method == "tools/call" && name == "help"
+},
+```
+
+`name` is what `Mcp-Name` mirrors: the tool, the prompt, the resource URI. With
+`Exempt` set and the budget on, the limiter parses every `POST` body; otherwise
+only a refused one.
 
 The bucket is keyed by `Principal.UserID`, so the limiter has to run inside the
 authentication middleware. Everything is in memory and resets with the process:
@@ -354,16 +390,48 @@ the work says so:
 ```go
 start := time.Now()
 // … one upstream call …
-ratelimit.Charge(ctx, time.Since(start))
+ratelimit.ChargeFor(ctx, "grafana", time.Since(start))
 ```
+
+The label is what `app_mcp_ratelimit_charge_seconds` breaks the budget down by,
+so "who ate the budget" is a PromQL query rather than an afternoon in the audit
+log. It is one series per label: name a target from your own catalogue, never a
+value from the request. `Charge(ctx, d)` is the same without a label.
 
 `Charge` is safe to call concurrently and does nothing when limits are off, so a
 handler never has to ask whether they are. A request that charges nothing is
 priced by its wall clock.
 
-Metrics: `app_mcp_ratelimit_denied_total{reason}` — `rpm`, `user_concurrent`,
-`global_concurrent`, `cost_budget` — and `app_mcp_ratelimit_inflight{scope}` with
-`user` and `global`.
+A handler can also ask what is left, and put it in its answer, so that a long
+investigation narrows its queries before it runs into the ceiling rather than
+after:
+
+```go
+if b, ok := ratelimit.Remaining(ctx); ok {
+    // b.Used, b.Limit, b.Left(), b.ResetAt
+}
+```
+
+It is the caller's finished requests in this window plus what this request has
+charged so far — a snapshot, which their other requests still running will
+change. `ok` is false with the budget off.
+
+Metrics:
+
+| Metric | Labels |
+|---|---|
+| `app_mcp_ratelimit_denied_total` | `reason`: `rpm`, `user_concurrent`, `global_concurrent`, `cost_budget` |
+| `app_mcp_ratelimit_inflight` | `scope`: `user`, `global` |
+| `app_mcp_ratelimit_charge_seconds` (histogram, 10ms–60s) | `label`: what you passed to `ChargeFor`, `unlabelled` for `Charge`, `wall_clock` for a request that charged nothing |
+| `app_mcp_ratelimit_budget_used_seconds` | `user`: spent in the current window |
+
+The histogram adds up to the budget: exempt calls and a limiter with the budget
+off are not in it. The `user` label is `Principal.UserID` as it is — where your
+authentication names a user by e-mail, the e-mail is in `/metrics`. The gauge is
+set as requests finish, drops to zero when the caller's next request opens a new
+window or within fifteen minutes of the old one ending, and goes with an idle
+caller's entry — an alert on `used / limit` fires for someone running out, not
+for someone who already has it back.
 
 ## mcp and doc
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fastjson"
 	"github.com/vmkteam/embedlog"
 	"github.com/vmkteam/zenrpc/v2"
 	"github.com/vmkteam/zenrpc/v2/smd"
@@ -193,6 +195,83 @@ func TestHandlePOST_BrokenJSON(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), "parse jsonrpc")
 }
 
+// A repeated member is read as its first occurrence here and as its last by
+// the decoder behind, so the two would disagree about what the request is —
+// which method, which tool, which revision. Refused before anything is
+// dispatched. A repeat inside the arguments is the tool's business: nothing
+// here reads them.
+func TestHandlePOST_RepeatedKey(t *testing.T) {
+	t.Parallel()
+	refused := map[string]string{
+		"method": `{"jsonrpc":"2.0","id":1,"method":"ping","method":"tools/list"}`,
+		"id":     `{"jsonrpc":"2.0","id":1,"id":2,"method":"ping"}`,
+		"params": `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a"},"params":{"name":"b"}}`,
+		"name":   `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"help","name":"db_query"}}`,
+		"_meta": `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"_meta":{` +
+			`"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/protocolVersion":"2025-06-18"}}}`,
+		// encoding/json matches a member without regard to case, Unicode folding
+		// included, so these are one member to it and two to fastjson.
+		"Name":   `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"help","Name":"db_query"}}`,
+		"Method": `{"jsonrpc":"2.0","id":1,"method":"ping","Method":"tools.call"}`,
+		"ID":     `{"jsonrpc":"2.0","id":1,"ID":null,"method":"ping"}`,
+		"paramſ": `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a"},"paramſ":{"name":"b"}}`,
+		"many members": `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a",` +
+			manyMembers(100) + `,"NAME":"b"}}`,
+	}
+	for name, body := range refused {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv, root, tools := newTestServer(t, Options{})
+			rr := post(t, srv, body)
+			assert.Equal(t, http.StatusBadRequest, rr.Code)
+			assert.Contains(t, rr.Body.String(), "named twice")
+			assert.Empty(t, root.methods(), "nothing is dispatched")
+			assert.Empty(t, tools.methods(), "nothing is dispatched")
+		})
+	}
+
+	t.Run("inside the arguments", func(t *testing.T) {
+		t.Parallel()
+		srv, _, tools := newTestServer(t, Options{})
+		rr := post(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a","arguments":{"q":1,"q":2}}}`)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, []string{"call"}, tools.methods())
+	})
+
+	t.Run("many members, none repeated", func(t *testing.T) {
+		t.Parallel()
+		srv, _, tools := newTestServer(t, Options{})
+		rr := post(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a",`+manyMembers(100)+`}}`)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, []string{"call"}, tools.methods())
+	})
+}
+
+// A body shaped to make the check quadratic costs one pass over its members:
+// a megabyte of distinct ones took seconds of CPU when every member was
+// compared with every other.
+func TestRepeatsKeyIsLinear(t *testing.T) {
+	t.Parallel()
+	v, err := fastjson.Parse(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{` + manyMembers(100_000) + `}}`)
+	require.NoError(t, err)
+	start := time.Now()
+	assert.False(t, repeatsKey(v))
+	assert.Less(t, time.Since(start), time.Second)
+}
+
+// manyMembers is n distinct members, "m0":0,"m1":0,…, to be spliced into an
+// object.
+func manyMembers(n int) string {
+	var b strings.Builder
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`"m` + strconv.Itoa(i) + `":0`)
+	}
+	return b.String()
+}
+
 // A request the transport refuses never reaches a handler, so it shows up in no
 // other series this library publishes. Without this counter a client that sends
 // batches, or one whose JSON is broken, is visible only in somebody else's
@@ -205,7 +284,7 @@ func TestTransportRejectionsAreCounted(t *testing.T) {
 	}
 
 	t.Run("every reason is published from the start", func(t *testing.T) {
-		assert.Equal(t, 11, testutil.CollectAndCount(rejectedTotal),
+		assert.Equal(t, 13, testutil.CollectAndCount(rejectedTotal),
 			"rate() cannot tell 'nothing refused' from 'no data'")
 		assert.Equal(t, 2, testutil.CollectAndCount(requestsTotal), "both eras are counted from zero")
 	})
@@ -220,6 +299,18 @@ func TestTransportRejectionsAreCounted(t *testing.T) {
 		before := count(reasonParse)
 		post(t, srv, `{"jsonrpc":"2.0","id":1,"method":`)
 		assert.Greater(t, count(reasonParse), before)
+	})
+
+	t.Run("repeated key", func(t *testing.T) {
+		before := count(reasonRepeatedKey)
+		post(t, srv, `{"jsonrpc":"2.0","id":1,"method":"ping","method":"tools/list"}`)
+		assert.Greater(t, count(reasonRepeatedKey), before)
+	})
+
+	t.Run("missing id", func(t *testing.T) {
+		before := count(reasonMissingID)
+		post(t, srv, `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"a"}}`)
+		assert.Greater(t, count(reasonMissingID), before)
 	})
 
 	t.Run("too large", func(t *testing.T) {
@@ -380,8 +471,8 @@ func TestNullIDIsANotification(t *testing.T) {
 	srv, _, _ := newTestServer(t, Options{})
 
 	for name, body := range map[string]string{
-		"null id":   `{"jsonrpc":"2.0","id":null,"method":"ping","params":{}}`,
-		"absent id": `{"jsonrpc":"2.0","method":"ping","params":{}}`,
+		"null id":   `{"jsonrpc":"2.0","id":null,"method":"notifications/initialized","params":{}}`,
+		"absent id": `{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -403,6 +494,30 @@ func TestNullIDIsANotification(t *testing.T) {
 	})
 }
 
+// Only a notification goes without an id. A call sent without one would be run
+// detached from the request — outside the rate limiter's slot and after its
+// budget was settled — and its answer read by nobody.
+func TestCallWithoutIDIsRefused(t *testing.T) {
+	t.Parallel()
+	for name, body := range map[string]string{
+		"absent id":         `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"a","arguments":{}}}`,
+		"null id":           `{"jsonrpc":"2.0","id":null,"method":"tools/call","params":{"name":"a","arguments":{}}}`,
+		"an id in capitals": `{"jsonrpc":"2.0","ID":1,"method":"tools/call","params":{"name":"a","arguments":{}}}`,
+		"zenrpc's own name": `{"jsonrpc":"2.0","method":"tools.call","params":{"name":"a","arguments":{}}}`,
+		"ping":              `{"jsonrpc":"2.0","method":"ping"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv, root, tools := newTestServer(t, Options{})
+			rr := post(t, srv, body)
+			assert.Equal(t, http.StatusBadRequest, rr.Code)
+			assert.Contains(t, rr.Body.String(), "needs an id")
+			assert.Empty(t, root.methods(), "nothing is dispatched")
+			assert.Empty(t, tools.methods(), "nothing is dispatched")
+		})
+	}
+}
+
 // The robustness table, modelled on go-sdk's bad_requests.txtar — which is not
 // a list of hypotheticals but of panics they actually shipped and fixed (their
 // issues #194–#197).
@@ -420,10 +535,10 @@ func TestMalformedBodiesGetDefinedAnswers(t *testing.T) {
 		body string
 		code int
 	}{
-		{"initialize without id", `{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18"}}`, http.StatusAccepted},
+		{"initialize without id", `{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18"}}`, http.StatusBadRequest},
 		{"initialize without params", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`, http.StatusOK},
 		{"initialize with null params", `{"jsonrpc":"2.0","id":2,"method":"initialize","params":null}`, http.StatusOK},
-		{"ping without id", `{"jsonrpc":"2.0","method":"ping"}`, http.StatusAccepted},
+		{"ping without id", `{"jsonrpc":"2.0","method":"ping"}`, http.StatusBadRequest},
 		{"notification carrying an id", `{"jsonrpc":"2.0","id":3,"method":"notifications/initialized"}`, http.StatusOK},
 		{"notification without one", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, http.StatusAccepted},
 		{"tools/call without params", `{"jsonrpc":"2.0","id":4,"method":"tools/call"}`, http.StatusOK},
@@ -434,7 +549,7 @@ func TestMalformedBodiesGetDefinedAnswers(t *testing.T) {
 		{"a bare string", `"hello"`, http.StatusOK},
 		{"a bare number", `42`, http.StatusOK},
 		{"a string id", `{"jsonrpc":"2.0","id":"abc","method":"ping","params":{}}`, http.StatusOK},
-		{"a null id", `{"jsonrpc":"2.0","id":null,"method":"ping","params":{}}`, http.StatusAccepted},
+		{"a null id", `{"jsonrpc":"2.0","id":null,"method":"ping","params":{}}`, http.StatusBadRequest},
 		{"no jsonrpc member", `{"id":1,"method":"ping","params":{}}`, http.StatusOK},
 		{"no method member", `{"jsonrpc":"2.0","id":1,"params":{}}`, http.StatusOK},
 		{"deeply nested params", `{"jsonrpc":"2.0","id":1,"method":"ping","params":` + strings.Repeat(`{"a":`, 200) + `1` + strings.Repeat(`}`, 200) + `}`, http.StatusOK},

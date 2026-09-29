@@ -28,16 +28,16 @@ func TestRPM(t *testing.T) {
 	l := newLimiter(t, Config{PerUserRPM: 60})
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	for i := range 60 {
-		release, reason := l.acquire("alice", now)
+		release, reason := l.acquire("alice", now, false)
 		require.NotNilf(t, release, "call %d denied: %s", i, reason)
 		release(charge{})
 	}
-	release, reason := l.acquire("alice", now)
+	release, reason := l.acquire("alice", now, false)
 	assert.Nil(t, release, "61st call should be denied")
 	assert.Equal(t, reasonRPM, reason)
 
 	// Other users are independent.
-	release, reason = l.acquire("bob", now)
+	release, reason = l.acquire("bob", now, false)
 	require.NotNilf(t, release, "bob blocked by alice's bucket: %s", reason)
 	release(charge{})
 }
@@ -45,17 +45,17 @@ func TestRPM(t *testing.T) {
 func TestPerUserConcurrent(t *testing.T) {
 	l := newLimiter(t, Config{PerUserConcurrent: 2})
 	now := time.Now()
-	r1, _ := l.acquire("alice", now)
-	r2, _ := l.acquire("alice", now)
+	r1, _ := l.acquire("alice", now, false)
+	r2, _ := l.acquire("alice", now, false)
 	require.NotNil(t, r1)
 	require.NotNil(t, r2)
 
-	r3, reason := l.acquire("alice", now)
+	r3, reason := l.acquire("alice", now, false)
 	assert.Nil(t, r3, "third should be denied")
 	assert.Equal(t, reasonUserConcurrent, reason)
 
 	r1(charge{})
-	r3, _ = l.acquire("alice", now)
+	r3, _ = l.acquire("alice", now, false)
 	require.NotNil(t, r3, "after release, slot should reopen")
 	r3(charge{})
 	r2(charge{})
@@ -64,15 +64,15 @@ func TestPerUserConcurrent(t *testing.T) {
 func TestGlobalConcurrent(t *testing.T) {
 	l := newLimiter(t, Config{GlobalConcurrent: 1})
 	now := time.Now()
-	r1, _ := l.acquire("alice", now)
+	r1, _ := l.acquire("alice", now, false)
 	require.NotNil(t, r1, "alice should pass")
 
-	r2, reason := l.acquire("bob", now)
+	r2, reason := l.acquire("bob", now, false)
 	assert.Nil(t, r2, "bob should hit global")
 	assert.Equal(t, reasonGlobalConcurrent, reason)
 
 	r1(charge{})
-	r2, _ = l.acquire("bob", now)
+	r2, _ = l.acquire("bob", now, false)
 	require.NotNil(t, r2, "after release, bob should pass")
 	r2(charge{})
 }
@@ -83,15 +83,15 @@ func TestGlobalDenialReturnsTheUserSlot(t *testing.T) {
 	l := newLimiter(t, Config{PerUserConcurrent: 1, GlobalConcurrent: 1})
 	now := time.Now()
 
-	held, _ := l.acquire("alice", now)
+	held, _ := l.acquire("alice", now, false)
 	require.NotNil(t, held)
 
-	denied, reason := l.acquire("bob", now)
+	denied, reason := l.acquire("bob", now, false)
 	require.Nil(t, denied)
 	require.Equal(t, reasonGlobalConcurrent, reason)
 
 	held(charge{})
-	r, reason := l.acquire("bob", now)
+	r, reason := l.acquire("bob", now, false)
 	require.NotNilf(t, r, "bob's own slot was never returned: %s", reason)
 	r(charge{})
 }
@@ -99,17 +99,17 @@ func TestGlobalDenialReturnsTheUserSlot(t *testing.T) {
 func TestCostBudget(t *testing.T) {
 	l := newLimiter(t, Config{CostBudgetPerHour: 100 * time.Millisecond})
 	now := time.Now()
-	r, _ := l.acquire("alice", now)
+	r, _ := l.acquire("alice", now, false)
 	r(charge{work: 60 * time.Millisecond, units: 1})
-	r, _ = l.acquire("alice", now)
+	r, _ = l.acquire("alice", now, false)
 	r(charge{work: 50 * time.Millisecond, units: 1})
 
-	r2, reason := l.acquire("alice", now)
+	r2, reason := l.acquire("alice", now, false)
 	assert.Nil(t, r2, "expected cost budget denial")
 	assert.Equal(t, reasonCostBudget, reason)
 
 	// After hour rollover the budget resets.
-	r3, _ := l.acquire("alice", now.Add(time.Hour+time.Minute))
+	r3, _ := l.acquire("alice", now.Add(time.Hour+time.Minute), false)
 	require.NotNil(t, r3, "budget didn't reset after hour")
 	r3(charge{})
 }
@@ -122,12 +122,13 @@ func TestChargePerItem(t *testing.T) {
 	t.Run("rpm counts every item", func(t *testing.T) {
 		l := newLimiter(t, Config{PerUserRPM: 60})
 		now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+		l.clock = func() time.Time { return now }
 		for range 3 {
-			release, reason := l.acquire("alice", now)
+			release, reason := l.acquire("alice", now, false)
 			require.NotNilf(t, release, "denied too early: %s", reason)
 			release(charge{work: time.Second, units: 20})
 		}
-		release, reason := l.acquire("alice", now)
+		release, reason := l.acquire("alice", now, false)
 		assert.Nil(t, release, "three requests of twenty calls are sixty, the bucket is empty")
 		assert.Equal(t, reasonRPM, reason)
 	})
@@ -137,11 +138,12 @@ func TestChargePerItem(t *testing.T) {
 	t.Run("more calls than the burst is still paid", func(t *testing.T) {
 		l := newLimiter(t, Config{PerUserRPM: 10})
 		now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-		release, _ := l.acquire("alice", now)
+		l.clock = func() time.Time { return now }
+		release, _ := l.acquire("alice", now, false)
 		require.NotNil(t, release)
 		release(charge{work: time.Second, units: 20})
 
-		next, reason := l.acquire("alice", now)
+		next, reason := l.acquire("alice", now, false)
 		assert.Nil(t, next, "twenty calls on a 10 RPM limiter must leave the bucket empty")
 		assert.Equal(t, reasonRPM, reason)
 	})
@@ -150,14 +152,41 @@ func TestChargePerItem(t *testing.T) {
 	t.Run("budget counts the sum, not the wall clock", func(t *testing.T) {
 		l := newLimiter(t, Config{CostBudgetPerHour: 100 * time.Millisecond})
 		now := time.Now()
-		release, _ := l.acquire("alice", now)
+		release, _ := l.acquire("alice", now, false)
 		require.NotNil(t, release)
 		release(charge{work: 120 * time.Millisecond, units: 4})
 
-		next, reason := l.acquire("alice", now)
+		next, reason := l.acquire("alice", now, false)
 		assert.Nil(t, next, "four 30ms calls in one request spend 120ms, not the 30ms they took")
 		assert.Equal(t, reasonCostBudget, reason)
 	})
+}
+
+// The rest of a slow request's calls is priced when it finishes. Priced at the
+// instant it was admitted, the bucket's clock went back over everything
+// admitted meanwhile, and the next caller was handed those seconds again.
+func TestSlowRequestDoesNotRefundItself(t *testing.T) {
+	l := newLimiter(t, Config{PerUserRPM: 60}) // a token a second
+	opened := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	for range 60 {
+		release, _ := l.acquire("alice", opened, false)
+		require.NotNil(t, release)
+		release(charge{units: 1})
+	}
+
+	slow, _ := l.acquire("alice", opened.Add(time.Second), false)
+	require.NotNil(t, slow, "the token that came back in the first second")
+
+	finished := opened.Add(11 * time.Second)
+	l.clock = func() time.Time { return finished }
+	quick, _ := l.acquire("alice", finished, false)
+	require.NotNil(t, quick, "ten more came back while the slow one ran; one of them is spent")
+	quick(charge{units: 1})
+	slow(charge{units: 11}) // ten more calls than acquire charged for: nine left, minus ten
+
+	next, reason := l.acquire("alice", finished, false)
+	assert.Nil(t, next, "the slow request's ten calls were paid for, not refunded")
+	assert.Equal(t, reasonRPM, reason)
 }
 
 // A request that charges nothing is priced by its wall clock, the way every
@@ -186,7 +215,7 @@ func TestChargeWithoutAccumulator(t *testing.T) {
 func TestEvictIdle(t *testing.T) {
 	l := newLimiter(t, Config{PerUserRPM: 60})
 	now := time.Now()
-	r, _ := l.acquire("alice", now)
+	r, _ := l.acquire("alice", now, false)
 	r(charge{})
 	require.Contains(t, l.entries, "alice")
 
@@ -202,7 +231,7 @@ func TestEvictIdle(t *testing.T) {
 func TestEvictSkipsBusy(t *testing.T) {
 	l := newLimiter(t, Config{PerUserConcurrent: 1})
 	now := time.Now()
-	r, _ := l.acquire("alice", now)
+	r, _ := l.acquire("alice", now, false)
 	require.NotNil(t, r)
 
 	// Don't release — entry holds an in-flight slot.
@@ -250,7 +279,7 @@ func TestDisabled(t *testing.T) {
 	l := New(Config{})
 	assert.True(t, l.Disabled(), "zero config should be Disabled")
 
-	release, reason := l.acquire("anyone", time.Now())
+	release, reason := l.acquire("anyone", time.Now(), false)
 	require.NotNilf(t, release, "disabled limiter should never deny: reason=%q", reason)
 	release(charge{})
 
@@ -271,7 +300,7 @@ func TestMiddlewareSkipsNonPOST(t *testing.T) {
 	h := l.Middleware(next, embedlog.Logger{})
 
 	// Occupy the single concurrency slot.
-	release, _ := l.acquire(anonymousUser, time.Now())
+	release, _ := l.acquire(anonymousUser, time.Now(), false)
 	require.NotNil(t, release)
 	defer func() { release(charge{}) }()
 
@@ -284,7 +313,7 @@ func TestMiddlewareSkipsNonPOST(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", nil))
 	assert.Equal(t, http.StatusTooManyRequests, rec.Code, "POST must still be limited")
-	assert.Equal(t, "10", rec.Header().Get("Retry-After"))
+	assert.Equal(t, "1", rec.Header().Get("Retry-After"), "a concurrency slot frees up when a neighbour finishes")
 	assert.Contains(t, rec.Body.String(), reasonUserConcurrent)
 }
 
@@ -342,7 +371,7 @@ func TestMetrics(t *testing.T) {
 	l := newLimiter(t, Config{PerUserConcurrent: 1, GlobalConcurrent: 1})
 	before := testutil.ToFloat64(inflightGauge.WithLabelValues(scopeUser))
 
-	release, _ := l.acquire("alice", time.Now())
+	release, _ := l.acquire("alice", time.Now(), false)
 	require.NotNil(t, release)
 	assert.InDelta(t, before+1, testutil.ToFloat64(inflightGauge.WithLabelValues(scopeUser)), 0)
 
