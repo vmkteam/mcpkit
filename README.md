@@ -478,6 +478,13 @@ type ResourceSource interface {
 }
 ```
 
+A source that also serves families of resources by URI template implements
+`TemplateSource` (`ResourceTemplates() []mcp.ResourceTemplate`), and
+`resources/templates/list` hands them out, paged like the resources. Without it
+the method answers with an empty list: it belongs to the resources capability,
+so clients ask for it on connect, and "method not found" in its place reads as a
+broken server.
+
 `WithReadHook` is where a service audits catalogue reads without this package
 learning what an audit is.
 

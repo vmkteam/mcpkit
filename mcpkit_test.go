@@ -153,6 +153,66 @@ func TestResources(t *testing.T) {
 	})
 }
 
+// templateLibrary is a source that also serves templates.
+type templateLibrary struct {
+	*doc.Library
+	templates []mcp.ResourceTemplate
+}
+
+func (l templateLibrary) ResourceTemplates() []mcp.ResourceTemplate { return l.templates }
+
+func TestResourceTemplates(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a source without templates lists an empty array", func(t *testing.T) {
+		t.Parallel()
+		got, err := mcpkit.NewResourcesService(testLibrary(t)).TemplatesList(t.Context(), "")
+		require.NoError(t, err)
+		b, err := json.Marshal(got)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"resultType":"complete","resourceTemplates":[],"ttlMs":0,"cacheScope":"private"}`, string(b))
+	})
+
+	t.Run("no source configured", func(t *testing.T) {
+		t.Parallel()
+		got, err := mcpkit.NewResourcesService(nil).TemplatesList(t.Context(), "")
+		require.NoError(t, err)
+		assert.Empty(t, got.ResourceTemplates)
+	})
+
+	t.Run("a source's templates, paged like the resources", func(t *testing.T) {
+		t.Parallel()
+		src := templateLibrary{Library: testLibrary(t), templates: []mcp.ResourceTemplate{
+			{URITemplate: testScheme + "targets/{name}.md", Name: "target", MimeType: doc.MimeMarkdown},
+			{URITemplate: testScheme + "tools/{name}.md", Name: "tool"},
+		}}
+		var heard []error
+		s := mcpkit.NewResourcesService(src, mcpkit.WithResourcePageSize(1), mcpkit.WithReadHook(func(_ context.Context, uri string, _ int, err error) {
+			assert.Empty(t, uri, "a list names no resource")
+			heard = append(heard, err)
+		}))
+
+		first, err := s.TemplatesList(t.Context(), "")
+		require.NoError(t, err)
+		require.Len(t, first.ResourceTemplates, 1)
+		assert.Equal(t, testScheme+"targets/{name}.md", first.ResourceTemplates[0].URITemplate)
+		require.NotEmpty(t, first.NextCursor)
+
+		second, err := s.TemplatesList(t.Context(), first.NextCursor)
+		require.NoError(t, err)
+		require.Len(t, second.ResourceTemplates, 1)
+		assert.Equal(t, "tool", second.ResourceTemplates[0].Name)
+		assert.Empty(t, second.NextCursor)
+		_, err = s.TemplatesList(t.Context(), "not-a-cursor")
+		require.ErrorContains(t, err, "resources.templatesList")
+
+		require.Len(t, heard, 3, "the hook hears every list, the refused one too")
+		assert.NoError(t, heard[0])
+		assert.NoError(t, heard[1])
+		assert.Error(t, heard[2])
+	})
+}
+
 // doc indexes every file of the tree it is given, so a resource is not
 // necessarily text. Reading one must not depend on that: a PNG pushed through
 // the text field reaches the client with U+FFFD in place of every byte that was
@@ -655,6 +715,17 @@ func TestEndToEndOverTransport(t *testing.T) {
 		// The bare path, without the scheme: the model types these out of the
 		// instruction text, and the server is expected to take them.
 		require.Len(t, c.ReadResource(t, "targets/grafana.md").Contents, 1)
+	})
+
+	// The method belongs to the resources capability, so clients ask for it on
+	// connect; a server without templates answers an empty list, not "method
+	// not found".
+	t.Run("resources/templates/list", func(t *testing.T) {
+		t.Parallel()
+		var got mcp.ResourceTemplateList
+		client(t).Call(t, "resources/templates/list", nil).Decode(t, &got)
+		assert.NotNil(t, got.ResourceTemplates)
+		assert.Empty(t, got.ResourceTemplates)
 	})
 
 	t.Run("prompts/get", func(t *testing.T) {

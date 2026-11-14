@@ -206,6 +206,7 @@ func TestEveryResultCarriesResultType(t *testing.T) {
 		ToolList{Tools: []Tool{}},
 		ToolCallResult{Content: []ContentBlock{{Type: ContentTypeText, Text: "x"}}},
 		ResourceList{Resources: []ResourceEntry{}},
+		ResourceTemplateList{ResourceTemplates: []ResourceTemplate{}},
 		ResourceData{Contents: []ResourceContent{{URI: "d://a"}}},
 		PromptList{Prompts: []PromptEntry{}},
 		RenderedPrompt{Messages: []PromptMessage{}},
@@ -223,7 +224,7 @@ func TestEveryResultCarriesResultType(t *testing.T) {
 	}
 
 	// A nested value is not a result and must not claim to be one.
-	for _, v := range []any{Tool{Name: "t"}, ResourceEntry{URI: "u"}, ContentBlock{Type: ContentTypeText}} {
+	for _, v := range []any{Tool{Name: "t"}, ResourceEntry{URI: "u"}, ResourceTemplate{URITemplate: "u/{x}"}, ContentBlock{Type: ContentTypeText}} {
 		b, err := json.Marshal(v)
 		require.NoError(t, err)
 		assert.NotContains(t, string(b), "resultType", "%T is part of an answer, not an answer", v)
