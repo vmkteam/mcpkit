@@ -19,6 +19,13 @@ type ResourceSource interface {
 	Read(uri string) (data []byte, mimeType string, err error)
 }
 
+// TemplateSource is an optional half of a ResourceSource: the templates
+// resources/templates/list hands out. A source without it has none, and the
+// method answers with an empty list.
+type TemplateSource interface {
+	ResourceTemplates() []mcp.ResourceTemplate
+}
+
 // URINormalizer is an optional half of a ResourceSource. When a source can
 // canonicalise a URI, the answer of resources/read names the resource the way
 // resources/list did, rather than echoing back the bare path the model typed.
@@ -26,9 +33,9 @@ type URINormalizer interface {
 	NormalizeURI(uri string) string
 }
 
-// ReadHook is called after each resources/read and resources/list. It is how a
-// service audits catalogue reads without this package knowing what an audit is.
-// On list, uri is empty.
+// ReadHook is called after each resources/read, resources/list and
+// resources/templates/list. It is how a service audits catalogue reads without
+// this package knowing what an audit is. On a list, uri is empty.
 type ReadHook func(ctx context.Context, uri string, bytesOut int, err error)
 
 // ResourcesOption tunes ResourcesService.
@@ -108,6 +115,36 @@ func (s ResourcesService) List(ctx context.Context, cursor string) (mcp.Resource
 	}
 	s.notify(ctx, "", n, nil)
 	return mcp.ResourceList{Resources: page, NextCursor: next, CacheHint: s.hint}, nil
+}
+
+// TemplatesList returns the resource templates this server serves.
+//
+// The method belongs to the resources capability, so a client that sees the
+// capability asks for it on connect. An empty list is the answer of a server
+// that has none; "method not found" in its place read as a broken server in
+// the clients' logs and in ours.
+//
+//zenrpc:cursor nextCursor from the previous page; empty for the first
+//zenrpc:return the resource templates this server serves
+func (s ResourcesService) TemplatesList(ctx context.Context, cursor string) (mcp.ResourceTemplateList, error) {
+	templates := []mcp.ResourceTemplate{}
+	if ts, ok := s.src.(TemplateSource); ok {
+		if got := ts.ResourceTemplates(); got != nil {
+			templates = got
+		}
+	}
+	page, next, err := mcp.Paginate(templates, cursor, s.pageSize, func(t mcp.ResourceTemplate) string { return t.URITemplate })
+	if err != nil {
+		err = RPCError("resources.templatesList", err)
+		s.notify(ctx, "", 0, err)
+		return mcp.ResourceTemplateList{}, err
+	}
+	n := 0
+	for _, t := range page {
+		n += len(t.URITemplate) + len(t.Name) + len(t.Description)
+	}
+	s.notify(ctx, "", n, nil)
+	return mcp.ResourceTemplateList{ResourceTemplates: page, NextCursor: next, CacheHint: s.hint}, nil
 }
 
 // Read returns the text of one resource. The argument is the canonical URI from

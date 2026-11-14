@@ -14,7 +14,7 @@ var RPC = struct {
 	DiscoverService  struct{ Discover string }
 	InitService      struct{ Initialize, Ping string }
 	PromptsService   struct{ List, Get string }
-	ResourcesService struct{ List, Read string }
+	ResourcesService struct{ List, TemplatesList, Read string }
 }{
 	DiscoverService: struct{ Discover string }{
 		Discover: "discover",
@@ -27,9 +27,10 @@ var RPC = struct {
 		List: "list",
 		Get:  "get",
 	},
-	ResourcesService: struct{ List, Read string }{
-		List: "list",
-		Read: "read",
+	ResourcesService: struct{ List, TemplatesList, Read string }{
+		List:          "list",
+		TemplatesList: "templateslist",
+		Read:          "read",
 	},
 }
 
@@ -70,7 +71,11 @@ never a security decision.`,
 							Type: smd.String,
 						},
 						{
-							Name: "_meta",
+							Name:     "_meta",
+							Optional: true,
+							Description: `A pointer, so that omitempty means what it says: encoding/json ignores
+omitempty on a struct, and a DiscoverResult built without serverInfo used
+to ship "_meta":{} — an empty object in a namespace the spec reserves.`,
 							Ref:  "#/definitions/mcp.ResultMeta",
 							Type: smd.Object,
 						},
@@ -799,6 +804,132 @@ by the protocol's own rule, and the format behind it is free to change.`,
 					},
 				},
 			},
+			"TemplatesList": {
+				Description: `TemplatesList returns the resource templates this server serves.
+
+The method belongs to the resources capability, so a client that sees the
+capability asks for it on connect. An empty list is the answer of a server
+that has none; "method not found" in its place read as a broken server in
+the clients' logs and in ours.`,
+				Parameters: []smd.JSONSchema{
+					{
+						Name:        "cursor",
+						Description: `nextCursor from the previous page; empty for the first`,
+						Type:        smd.String,
+					},
+				},
+				Returns: smd.JSONSchema{
+					Description: `the resource templates this server serves`,
+					Type:        smd.Object,
+					TypeName:    "McpResourceTemplateList",
+					Properties: smd.PropertyList{
+						{
+							Name: "resourceTemplates",
+							Type: smd.Array,
+							Items: map[string]string{
+								"$ref": "#/definitions/mcp.ResourceTemplate",
+							},
+						},
+						{
+							Name: "nextCursor",
+							Type: smd.String,
+						},
+						{
+							Name: "ttlMs",
+							Type: smd.Integer,
+						},
+						{
+							Name: "cacheScope",
+							Type: smd.String,
+						},
+					},
+					Definitions: map[string]smd.Definition{
+						"mcp.ResourceTemplate": {
+							Type: "object",
+							Properties: smd.PropertyList{
+								{
+									Name: "uriTemplate",
+									Type: smd.String,
+								},
+								{
+									Name: "name",
+									Type: smd.String,
+								},
+								{
+									Name: "title",
+									Type: smd.String,
+								},
+								{
+									Name: "description",
+									Type: smd.String,
+								},
+								{
+									Name: "mimeType",
+									Type: smd.String,
+								},
+								{
+									Name: "icons",
+									Type: smd.Array,
+									Items: map[string]string{
+										"$ref": "#/definitions/mcp.Icon",
+									},
+								},
+								{
+									Name:     "annotations",
+									Optional: true,
+									Ref:      "#/definitions/mcp.Annotations",
+									Type:     smd.Object,
+								},
+							},
+						},
+						"mcp.Icon": {
+							Type: "object",
+							Properties: smd.PropertyList{
+								{
+									Name: "src",
+									Type: smd.String,
+								},
+								{
+									Name: "mimeType",
+									Type: smd.String,
+								},
+								{
+									Name: "sizes",
+									Type: smd.Array,
+									Items: map[string]string{
+										"type": smd.String,
+									},
+								},
+								{
+									Name: "theme",
+									Type: smd.String,
+								},
+							},
+						},
+						"mcp.Annotations": {
+							Type: "object",
+							Properties: smd.PropertyList{
+								{
+									Name: "audience",
+									Type: smd.Array,
+									Items: map[string]string{
+										"type": smd.String,
+									},
+								},
+								{
+									Name:     "priority",
+									Optional: true,
+									Type:     smd.Float,
+								},
+								{
+									Name: "lastModified",
+									Type: smd.String,
+								},
+							},
+						},
+					},
+				},
+			},
 			"Read": {
 				Description: `Read returns the text of one resource. The argument is the canonical URI from
 resources/list, but a bare path is accepted too: the model types these out of
@@ -885,6 +1016,25 @@ func (s ResourcesService) Invoke(ctx context.Context, method string, params json
 		}
 
 		resp.Set(s.List(ctx, args.Cursor))
+
+	case RPC.ResourcesService.TemplatesList:
+		var args = struct {
+			Cursor string `json:"cursor"`
+		}{}
+
+		if zenrpc.IsArray(params) {
+			if params, err = zenrpc.ConvertToObject([]string{"cursor"}, params); err != nil {
+				return zenrpc.NewResponseError(nil, zenrpc.InvalidParams, "", err.Error())
+			}
+		}
+
+		if len(params) > 0 {
+			if err := json.Unmarshal(params, &args); err != nil {
+				return zenrpc.NewResponseError(nil, zenrpc.InvalidParams, "", err.Error())
+			}
+		}
+
+		resp.Set(s.TemplatesList(ctx, args.Cursor))
 
 	case RPC.ResourcesService.Read:
 		var args = struct {

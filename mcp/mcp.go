@@ -329,6 +329,25 @@ type ResourceList struct {
 	CacheHint
 }
 
+// ResourceTemplate is a family of resources addressed by an RFC 6570 URI
+// template, `docs://targets/{name}.md`, rather than one by one.
+type ResourceTemplate struct {
+	URITemplate string       `json:"uriTemplate"`
+	Name        string       `json:"name"`
+	Title       string       `json:"title,omitempty"`
+	Description string       `json:"description,omitempty"`
+	MimeType    string       `json:"mimeType,omitempty"`
+	Icons       []Icon       `json:"icons,omitempty"`
+	Annotations *Annotations `json:"annotations,omitempty"`
+}
+
+// ResourceTemplateList is the cacheable answer of resources/templates/list.
+type ResourceTemplateList struct {
+	ResourceTemplates []ResourceTemplate `json:"resourceTemplates"`
+	NextCursor        string             `json:"nextCursor,omitempty"`
+	CacheHint
+}
+
 // ResourceContent carries one resource either as text or as base64 in Blob —
 // "Binary data MUST be properly encoded", and a PNG pushed through Text comes
 // out of the JSON encoder with U+FFFD in place of every byte that was not valid
@@ -488,6 +507,11 @@ func (r ToolCallResult) MarshalJSON() ([]byte, error) {
 
 func (r ResourceList) MarshalJSON() ([]byte, error) {
 	type alias ResourceList
+	return completeResult(alias(r))
+}
+
+func (r ResourceTemplateList) MarshalJSON() ([]byte, error) {
+	type alias ResourceTemplateList
 	return completeResult(alias(r))
 }
 
